@@ -37,6 +37,7 @@ If git history shows unexpected state (uncommitted changes, recent reverts, stas
 - NEVER commit secrets — use `.env.local` (gitignored)
 - NEVER skip the session-start git ritual
 - **Seed scripts must be idempotent.** Use `ON CONFLICT (...) DO NOTHING`. Never UPDATE or DELETE existing rows. Cite inbound-tracker commit `0fdcb2f` as the reason in any seed script comment.
+- **No default credentials.** Seed scripts require per-user `SEED_<USERNAME>_PASSWORD` env vars; users without their var set must be skipped, never seeded with a fallback. No `changeme-*`, no `password123`, no defaults — ever. If you find yourself writing a default password, stop and re-read this rule.
 - **Any cron job that writes to Postgres or Box must be commented out in `railway.toml` until its target integration is live.** Don't fire crons into the void.
 
 ## Workflow-Specific Rules
