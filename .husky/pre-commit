@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+# Hoeck Team Dashboard — pre-commit hook
+# Blocks destructive RealNex/Box/DB method names from being added outside lib/external/*
+# Reference: BUILD_SPEC.md "Enforcement" section.
+
+set -e
+
+FORBIDDEN="deleteFile|deleteFolder|moveFile|moveFolder|renameFile|updateCompany|updateContact|deleteCompany|deleteContact|updateActivity|deleteActivity|hardDelete|truncate"
+
+# Look at staged Added/Copied/Modified files outside lib/external/ and test files.
+# Fail if any contain the forbidden patterns.
+VIOLATIONS=$(
+  git diff --cached --name-only --diff-filter=ACM \
+    | grep -v "^lib/external/" \
+    | grep -v "\.test\." \
+    | grep -v "^docs/" \
+    | grep -v "^BUILD_SPEC\.md$" \
+    | grep -v "^AGENTS\.md$" \
+    | grep -v "^MEMORY\.md$" \
+    | grep -v "^\.husky/" \
+    | xargs -r grep -l -E "$FORBIDDEN" 2>/dev/null || true
+)
+
+if [ -n "$VIOLATIONS" ]; then
+  echo ""
+  echo "ERROR: Forbidden destructive methods found outside lib/external/:"
+  echo "$VIOLATIONS"
+  echo ""
+  echo "Allowed pattern: methods like updateCompany / deleteFile / moveFolder may only"
+  echo "exist inside lib/external/ (and even there only as explicitly-forbidden tests)."
+  echo "If you have a legitimate reason, name the method differently or move it."
+  exit 1
+fi
+
+# Run safe-wrapper forbidden-method assertions before allowing the commit.
+# These tests fail if anyone exports a forbidden method from lib/external/*/safe.ts.
+if [ -f "node_modules/.bin/vitest" ]; then
+  npx vitest run lib/external --reporter=dot 2>&1 || {
+    echo ""
+    echo "ERROR: Safe-wrapper tests failed. Commit blocked."
+    exit 1
+  }
+fi
+
+exit 0

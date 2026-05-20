@@ -1,0 +1,238 @@
+/**
+ * Health-check primitives — shared by /api/health AND scripts/health-check.ts.
+ *
+ * Lessons applied:
+ *   - inbound-tracker commit `a91bc7f` retrofitted /api/debug to diagnose volume mount
+ *     issues IN PRODUCTION, after the fact. We ship the equivalent diagnostics on day 1
+ *     so we never have to debug blind.
+ *   - Postgres connectivity gracefully degrades to "yellow" when run from a dev host that
+ *     can't reach the public DB proxy (CBRE corp firewall blocks TCP 51241). On Railway
+ *     itself, the same check is "hard red" if it fails. The `RAILWAY_ENVIRONMENT` env var
+ *     distinguishes the two contexts.
+ *
+ * Each check returns one Result; the aggregate is healthy iff all checks are 'ok' or 'warn'.
+ */
+
+import { execSync } from 'node:child_process';
+import { Pool } from 'pg';
+
+export type CheckStatus = 'ok' | 'warn' | 'fail' | 'not_configured';
+
+export interface CheckResult {
+  name: string;
+  status: CheckStatus;
+  detail?: string;
+  metadata?: Record<string, unknown>;
+}
+
+const REQUIRED_ENV_VARS = [
+  'DATABASE_URL',
+  'SESSION_PASSWORD',
+] as const;
+
+const OPTIONAL_ENV_VARS = [
+  'REALNEX_API_KEY',
+  'REALNEX_API_BASE_URL',
+  'BOX_CLIENT_ID',
+  'BOX_CLIENT_SECRET',
+  'BOX_ACCESS_TOKEN',
+  'BOX_REFRESH_TOKEN',
+  'BOX_TENANTS_CHAPMANHOECK_FOLDER_ID',
+  'BOX_MASTER_EXCEL_FILE_ID',
+  'ANTHROPIC_API_KEY',
+] as const;
+
+export async function checkEnvVars(): Promise<CheckResult> {
+  const missing = REQUIRED_ENV_VARS.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    return {
+      name: 'env_vars',
+      status: 'fail',
+      detail: `missing required: ${missing.join(', ')}`,
+    };
+  }
+  const optionalMissing = OPTIONAL_ENV_VARS.filter((k) => !process.env[k]);
+  return {
+    name: 'env_vars',
+    status: optionalMissing.length > 0 ? 'warn' : 'ok',
+    detail:
+      optionalMissing.length > 0
+        ? `optional missing: ${optionalMissing.join(', ')} (expected during Phases 2-5)`
+        : 'all env vars set',
+    metadata: { required_present: REQUIRED_ENV_VARS.length, optional_missing: optionalMissing.length },
+  };
+}
+
+export async function checkPostgres(): Promise<CheckResult> {
+  if (!process.env.DATABASE_URL) {
+    return { name: 'postgres', status: 'fail', detail: 'DATABASE_URL not set' };
+  }
+
+  const isProductionRailway = process.env.RAILWAY_ENVIRONMENT === 'production';
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL.includes('railway.internal')
+      ? undefined
+      : { rejectUnauthorized: false },
+    connectionTimeoutMillis: 5_000, // fail fast on firewall-blocked hosts
+  });
+
+  try {
+    const [verRow] = (await pool.query('SELECT version()')).rows as { version: string }[];
+    const [sizeRow] = (await pool.query("SELECT pg_database_size(current_database()) AS size")).rows as {
+      size: string;
+    }[];
+    return {
+      name: 'postgres',
+      status: 'ok',
+      detail: 'reachable',
+      metadata: {
+        version: verRow.version.split(/\s+/, 2).join(' '),
+        database_size_bytes: Number(sizeRow.size),
+        project: process.env.RAILWAY_PROJECT_NAME ?? '(local)',
+        environment: process.env.RAILWAY_ENVIRONMENT ?? '(local)',
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // On dev hosts where the public proxy is firewall-blocked (CBRE corp), this is expected
+    // and not a real failure. On Railway, same error = real outage.
+    if (!isProductionRailway && /ETIMEDOUT|ECONNREFUSED|ENETUNREACH/.test(msg)) {
+      return {
+        name: 'postgres',
+        status: 'warn',
+        detail: 'unreachable from dev host (expected on CBRE corp network; deploys still migrate via Railway)',
+        metadata: { error: msg, environment: process.env.RAILWAY_ENVIRONMENT ?? '(local)' },
+      };
+    }
+    return { name: 'postgres', status: 'fail', detail: msg };
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+export async function checkRealNex(): Promise<CheckResult> {
+  if (!process.env.REALNEX_API_KEY) {
+    return {
+      name: 'realnex',
+      status: 'not_configured',
+      detail: 'REALNEX_API_KEY not set — wired in Phase 3',
+    };
+  }
+  // Phase 3: real ping. For now, presence of the key is enough.
+  return {
+    name: 'realnex',
+    status: 'warn',
+    detail: 'key present but live ping not implemented until Phase 3',
+  };
+}
+
+export async function checkBox(): Promise<CheckResult> {
+  if (!process.env.BOX_ACCESS_TOKEN) {
+    return {
+      name: 'box',
+      status: 'not_configured',
+      detail: 'BOX_ACCESS_TOKEN not set — wired in Phase 2',
+    };
+  }
+  return {
+    name: 'box',
+    status: 'warn',
+    detail: 'token present but live ping not implemented until Phase 2',
+  };
+}
+
+export async function checkBoxRootFolder(): Promise<CheckResult> {
+  if (!process.env.BOX_TENANTS_CHAPMANHOECK_FOLDER_ID) {
+    return {
+      name: 'box_root_folder',
+      status: 'not_configured',
+      detail: 'BOX_TENANTS_CHAPMANHOECK_FOLDER_ID not set — wired in Phase 2',
+    };
+  }
+  return { name: 'box_root_folder', status: 'warn', detail: 'live check pending Phase 2' };
+}
+
+export async function checkMasterExcelFile(): Promise<CheckResult> {
+  if (!process.env.BOX_MASTER_EXCEL_FILE_ID) {
+    return {
+      name: 'master_excel',
+      status: 'not_configured',
+      detail: 'BOX_MASTER_EXCEL_FILE_ID not set — wired in Phase 4',
+    };
+  }
+  return { name: 'master_excel', status: 'warn', detail: 'live check pending Phase 4' };
+}
+
+export async function checkAnthropic(): Promise<CheckResult> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return {
+      name: 'anthropic',
+      status: 'not_configured',
+      detail: 'ANTHROPIC_API_KEY not set — wired in Phase 3',
+    };
+  }
+  return { name: 'anthropic', status: 'warn', detail: 'live check pending Phase 3' };
+}
+
+export async function checkPythonBridge(): Promise<CheckResult> {
+  try {
+    const py = execSync('python --version', { encoding: 'utf-8', timeout: 5_000 }).trim();
+    let openpyxl = 'missing';
+    try {
+      openpyxl = execSync('python -c "import openpyxl; print(openpyxl.__version__)"', {
+        encoding: 'utf-8',
+        timeout: 5_000,
+      }).trim();
+    } catch {
+      return {
+        name: 'python_bridge',
+        status: 'warn',
+        detail: 'python OK but openpyxl missing — `pip install openpyxl` (used in Phase 4)',
+        metadata: { python: py },
+      };
+    }
+    return {
+      name: 'python_bridge',
+      status: 'ok',
+      detail: 'python + openpyxl present',
+      metadata: { python: py, openpyxl },
+    };
+  } catch {
+    return {
+      name: 'python_bridge',
+      status: 'warn',
+      detail: 'python not on PATH — required in Phase 4 for Master Excel reads/appends',
+    };
+  }
+}
+
+export async function runAllChecks(): Promise<CheckResult[]> {
+  return Promise.all([
+    checkEnvVars(),
+    checkPostgres(),
+    checkRealNex(),
+    checkBox(),
+    checkBoxRootFolder(),
+    checkMasterExcelFile(),
+    checkAnthropic(),
+    checkPythonBridge(),
+  ]);
+}
+
+export function aggregateStatus(checks: CheckResult[]): {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  failed: number;
+  warned: number;
+  ok: number;
+} {
+  const ok = checks.filter((c) => c.status === 'ok').length;
+  const warned = checks.filter((c) => c.status === 'warn' || c.status === 'not_configured').length;
+  const failed = checks.filter((c) => c.status === 'fail').length;
+  return {
+    status: failed > 0 ? 'unhealthy' : warned > 0 ? 'degraded' : 'healthy',
+    failed,
+    warned,
+    ok,
+  };
+}

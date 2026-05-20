@@ -1,27 +1,36 @@
-# Hoeck Team Dashboard
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-Internal tenant rep dashboard for the Hoeck/Chapman/Gorelov team at CBRE San Diego.
+## Getting Started
 
-Integrates RealNex CRM + Box file storage with dashboard-native notes, tags, and activity feed.
+First, run the development server:
 
-See `BUILD_SPEC.md` for the full architecture, safety rules, and build phases.
-See `docs/RealNex_Workflow.md` and `docs/Box_Workflow.md` for the source-of-truth workflows.
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
 
-## Stack
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-- Next.js 16 + TypeScript
-- Postgres on Railway
-- Drizzle ORM
-- TanStack Query
-- Tailwind + shadcn/ui
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-## For developers
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
-This project is built and maintained with Claude Code. Start every session by:
+## Learn More
 
-1. `git status && git log --oneline -10 && git stash list`
-2. Read `MEMORY.md`
-3. Read `AGENTS.md`
-4. Summarize current state before writing any code
+To learn more about Next.js, take a look at the following resources:
 
-See `MEMORY.md` and `AGENTS.md` (created by Claude Code in Phase 1) for the session rituals.
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
