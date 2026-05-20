@@ -1,8 +1,21 @@
 # Ensure Python (Phase 4 master_excel scripts) + Postgres client (pg_dump for Phase 2 backups)
-# are present in Railway's build image so the cron jobs can actually run when we enable them.
+# are present in Railway's build image.
+#
+# openpyxl comes from Nix directly (python311Packages.openpyxl) — NOT from pip.
+# Reason: PEP 668 / Nix's immutable /nix/store filesystem blocks `pip install` system-wide
+# (error: externally-managed-environment). Using Nix's openpyxl sidesteps the issue
+# entirely and keeps the build image deterministic.
+#
+# requirements.txt is kept for local dev convenience (users who prefer pip in a venv)
+# but is NOT consumed by the Railway build.
 
 [phases.setup]
-nixPkgs = ['nodejs_20', 'python311', 'python311Packages.pip', 'postgresql_16']
+nixPkgs = [
+  'nodejs_20',
+  'python311',
+  'python311Packages.openpyxl',
+  'postgresql_16',
+]
 
 [phases.install]
-cmds = ['npm ci', 'pip install -r requirements.txt']
+cmds = ['npm ci']
