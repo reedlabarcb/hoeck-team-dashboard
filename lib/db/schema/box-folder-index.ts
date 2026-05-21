@@ -26,6 +26,7 @@ import {
   text,
   timestamp,
   integer,
+  bigint,
   boolean,
   jsonb,
   index,
@@ -53,7 +54,9 @@ export const boxFolderIndex = pgTable(
 
     // Box metadata snapshots
     boxModifiedAt: timestamp('box_modified_at', { withTimezone: true }),
-    sizeBytes: integer('size_bytes'),
+    // bigint because Box folder rollup sizes can exceed 2.1 GB (INTEGER max).
+    // mode:'number' keeps the JS-side type as plain `number` — safe up to 2^53 (~9 PB).
+    sizeBytes: bigint('size_bytes', { mode: 'number' }),
     // For web_link items: the resolved URL (subleases shortcut shows up as web_link in some accounts)
     webLinkUrl: text('web_link_url'),
     isSubleaseShortcut: boolean('is_sublease_shortcut').notNull().default(false),

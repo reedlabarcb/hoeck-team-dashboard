@@ -1,0 +1,1 @@
+ALTER TABLE "box_folder_index" ALTER COLUMN "size_bytes" SET DATA TYPE bigint;
