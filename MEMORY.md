@@ -34,7 +34,7 @@ Master Excel: append-only in v1.
 
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
-- [ ] Phase 2: Box folder index
+- [x] Phase 2: Box folder index — code complete (P2.1-P2.8), P2.9 (weekly pg_dump cron) deferred. Awaiting deploy + browser smoke.
 - [ ] Phase 3: RealNex sync + 4 workflows
 - [ ] Phase 4: Master Excel reads
 - [ ] Phase 5: Master Excel appends
@@ -43,10 +43,12 @@ Master Excel: append-only in v1.
 - [ ] Phase 8: Home + backup + health UI
 
 ## Schema
-(Phase 1 tables — see `lib/db/schema/`)
-- `users` (id, email, name, password_hash, role, created_at, updated_at, version, deleted_at)
-- `activity_feed` (id, actor_user_id, action, entity_type, entity_id, payload jsonb, status, created_at)
-- `system_state` (key PK, value jsonb, updated_at)
+(see `lib/db/schema/`)
+- `users` (id, email, name, password_hash, role, created_at, updated_at, version, deleted_at) — Phase 1
+- `activity_feed` (id, actor_user_id, action, entity_type, entity_id, payload jsonb, status, created_at) — Phase 1
+- `system_state` (key PK, value jsonb, updated_at) — Phase 1
+- `user_box_tokens` (id, user_id FK, box_user_id, box_login, access_token_encrypted, refresh_token_encrypted, expires_at, …) — Phase 2; AES-256-GCM via `BOX_TOKEN_ENCRYPTION_KEY`
+- `box_folder_index` (id, box_id UNIQUE, box_type enum, name, parent_box_id, depth, path_segments jsonb, year_start/end, deal_type, address, is_mt_client, market_subfolder, is_sublease_shortcut, last_seen_at, last_walk_run_id, …) — Phase 2; mirror of Box folder tree
 
 ## API Keys / Env Vars (see .env.local.example)
 - DATABASE_URL (Railway public Postgres URL for local dev; Railway injects internal URL in production)
@@ -76,6 +78,9 @@ Master Excel: append-only in v1.
 - 2026-05-21: Railway app service `hoeck-team-dashboard` created in the existing project, source = GitHub repo `reedlabarcb/hoeck-team-dashboard@main`. Env vars set: `DATABASE_URL=${{Postgres.DATABASE_URL}}` (reference), `SESSION_PASSWORD` (48-char random), `SEED_REED_PASSWORD` (24-char random, also written to local gitignored `secrets-bootstrap.txt`), `NODE_ENV=production`.
 - 2026-05-21: First deploy attempt failed on `pip install -r requirements.txt` (PEP 668 — Nix's immutable `/nix/store`). Fix (`23ed550`): swap pip-based openpyxl install for Nix's `python311Packages.openpyxl`; drop pip from build phase entirely.
 - 2026-05-21: **Phase 1 deployed.** Public URL: `https://hoeck-team-dashboard-production.up.railway.app`. Commit `23ed550`. `/api/health` returns 200, aggregate `degraded` (0 failed, 7 warned, 1 ok). Postgres check green: PostgreSQL 18.4, db size ~8 MB, project/environment metadata populated. `startCommand` ran `db:migrate` (3 tables created) + `seed:users` (reed inserted, mike/jack/nadya skipped per env vars) + `next start`. App ready in 69ms.
+- 2026-05-21: Phase 2 backend code committed (`ed24359`): user_box_tokens + AES-256-GCM crypto, Box OAuth client + token-refresh helper, /api/auth/box/connect + /callback routes, Box safe wrapper read methods (listFolder/getFolder/getFile/getFileVersions/downloadFile/searchFolderTree), folder-name parser, box_folder_index schema, BFS walker. 62/62 vitest pass. `lib/db/index.ts` refactored to lazy-init via Proxy so tests don't need DATABASE_URL.
+- 2026-05-21: Phase 2 UI + sync (committing): /files page (browser, breadcrumb, search, click-through), `<ConnectBoxBanner />`, `<BoxRefreshButton />`, /api/box/{connection,folders,reindex} routes, scripts/sync-cron.ts (real impl replaces Phase 1 stubs). Daily cron now indexes Box. Build clean, 14 routes resolved.
+- 2026-05-21: Box credentials in Railway env: `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, `BOX_TENANTS_CHAPMANHOECK_FOLDER_ID=346493191102`, `BOX_TOKEN_ENCRYPTION_KEY` (32-byte AES-256 base64). All four added to rotate-before-Phase-7 list (CID + secret were exposed in transcript paste, encryption key + folder ID flagged for completeness).
 
 ## Known Issues / Next Up
 - **Backup story is incomplete.** Railway Hobby plan has zero Postgres backups. Phase 1 ships `/api/export/all` (manual ZIP) as the only safety net. `scripts/backup-db.ts` is stubbed (pg_dump → local) with `TODO: upload to Box` — full weekly cron to be wired end of Phase 2 once Box OAuth is live. Cron entry in `railway.toml` is commented out until then.
@@ -92,9 +97,10 @@ Master Excel: append-only in v1.
 - **Local dev DB option not yet set up.** If laptop-side UI iteration with live data becomes necessary (probably never in Phase 1, possibly in Phase 2+), spin up Docker Postgres locally and set `DATABASE_URL` to `postgres://localhost:5432/...`. Defer this decision until it actually hurts.
 
 ## Next Up
-1. **Browser smoke test** (Reed runs): visit https://hoeck-team-dashboard-production.up.railway.app → log in as `reed.labar@cbre.com` with the password in `secrets-bootstrap.txt` → confirm dashboard shell, Backup ZIP download, `/health` page, logout all work. Then rotate Reed's password.
-2. **Phase 2 kickoff** (paused until user authorizes): Box developer-console walkthrough → `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, `BOX_ACCESS_TOKEN`, `BOX_REFRESH_TOKEN`, `BOX_TENANTS_CHAPMANHOECK_FOLDER_ID`. Then: Box safe wrapper read methods, folder walker w/ convention parsing, `box_folder_index` table, `/files` page, manual "Refresh from Box" re-index. Also wire the `backup:weekly` cron to upload `pg_dump` output to a dedicated Box backup folder (un-comment the cron entry in `railway.toml`).
-3. **Phase 4 prep:** switch nixpacks to `python311.withPackages (ps: with ps; [ openpyxl ])` so `python -c "import openpyxl"` works and `python_bridge` goes green.
+1. **Phase 2 browser smoke** (Reed runs): visit https://hoeck-team-dashboard-production.up.railway.app/files → click "Connect Box" → grant consent on Box → redirected back to /files → click "Refresh from Box" → tree appears → drill into a client folder → click a file → opens in Box new tab. Verify /api/box/connection returns `connected: true` and shows correct `box_login`.
+2. **Phase 2.9 (deferred):** weekly pg_dump → Box backup cron. Implementation: choose/create a `dashboard-backups` subfolder in `Tenants – ChapmanHoeck`, use Box upload API to push the SQL dump as a new file (versioned), uncomment the weekly cron in `railway.toml`. Closes the Hobby-tier-no-Postgres-backup risk.
+3. **Phase 3:** RealNex sync + 4 workflows. Blocked on RealNex admin access being granted to Jack/Mike/Nadya + API key from Reed's account.
+4. **Phase 4 prep:** switch nixpacks to `python311.withPackages (ps: with ps; [ openpyxl ])` so `python -c "import openpyxl"` works and `python_bridge` goes green.
 
 ## Key Decisions
 - Postgres (managed Railway), not SQLite — directly motivated by golf-bd SQLite-on-volume backup machinery (commit `156aa51`)

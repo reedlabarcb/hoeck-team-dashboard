@@ -50,7 +50,7 @@ export function getPool(): Pool {
 export const db: ReturnType<typeof drizzle<typeof schema>> = new Proxy(
   {} as ReturnType<typeof drizzle<typeof schema>>,
   {
-    get(_target, prop, _receiver) {
+    get(_target, prop) {
       const real = drizzle(getPool(), { schema });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (real as any)[prop];
