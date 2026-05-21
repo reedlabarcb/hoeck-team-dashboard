@@ -8,13 +8,15 @@ export interface BoxItem {
   type: 'file' | 'folder' | 'web_link';
   name: string;
   parentId?: string;
+  modifiedAt?: string;
+  size?: number;
+  // For web_link items (Box's shortcut/alias type), the resolved URL.
+  url?: string;
 }
 
 export interface BoxFolder extends BoxItem {
   type: 'folder';
   itemCount?: number;
-  size?: number;
-  modifiedAt?: string; // ISO datetime
 }
 
 export interface BoxFile extends BoxItem {
@@ -31,6 +33,27 @@ export interface BoxFileVersion {
   versionNumber: string;
   modifiedAt: string;
   modifiedBy?: string;
+}
+
+// Raw shapes from Box API — used inside the wrapper, not exposed.
+export interface BoxApiItem {
+  type: 'file' | 'folder' | 'web_link';
+  id: string;
+  name: string;
+  size?: number;
+  modified_at?: string;
+  parent?: { id: string; type: 'folder' };
+  item_count?: number;
+  sha1?: string;
+  url?: string;
+  shared_link?: { url?: string };
+}
+
+export interface BoxApiFolderListing {
+  total_count: number;
+  entries: BoxApiItem[];
+  offset: number;
+  limit: number;
 }
 
 // Folder convention parsing — used by Phase 2 folder walker.

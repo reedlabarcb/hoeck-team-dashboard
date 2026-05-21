@@ -21,6 +21,12 @@ CREATE TRIGGER users_version_trigger
   BEFORE UPDATE ON users
   FOR EACH ROW EXECUTE FUNCTION update_version_and_timestamp();
 
+-- user_box_tokens table (Phase 2)
+DROP TRIGGER IF EXISTS user_box_tokens_version_trigger ON user_box_tokens;
+CREATE TRIGGER user_box_tokens_version_trigger
+  BEFORE UPDATE ON user_box_tokens
+  FOR EACH ROW EXECUTE FUNCTION update_version_and_timestamp();
+
 -- Future editable tables: add a trigger here as they land.
 -- DROP TRIGGER IF EXISTS notes_version_trigger ON notes;
 -- CREATE TRIGGER notes_version_trigger

@@ -27,6 +27,12 @@ export interface SessionUser {
 
 export interface AppSession {
   user?: SessionUser;
+  // Box OAuth: random state token set on /connect, validated on /callback to prevent CSRF.
+  boxOauthState?: {
+    state: string;
+    issuedAt: number; // ms epoch
+    redirectAfter?: string; // where to send user after callback
+  };
 }
 
 if (!process.env.SESSION_PASSWORD) {

@@ -31,6 +31,16 @@ describe('box safe wrapper — forbidden methods are absent', () => {
   }
 });
 
+describe('box safe wrapper — allow-listed read methods ARE exported (Phase 2)', () => {
+  const ALLOWED_READS = ['listFolder', 'getFolder', 'getFile', 'getFileVersions', 'downloadFile', 'searchFolderTree'] as const;
+  for (const method of ALLOWED_READS) {
+    test(`exports "${method}"`, () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(typeof (boxSafe as any)[method]).toBe('function');
+    });
+  }
+});
+
 describe('DEAL_FOLDER_PATTERN', () => {
   test.each([
     '2026 – Lease Acquisition',
