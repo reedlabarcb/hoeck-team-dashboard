@@ -33,7 +33,7 @@ Master Excel: append-only in v1.
 - 401 in components leaves users confused → global fetch wrapper reloads page on 401
 
 ## Current Status
-- [x] Phase 1: Foundation + health check (build green, awaiting Railway deploy for end-to-end verification)
+- [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
 - [ ] Phase 2: Box folder index
 - [ ] Phase 3: RealNex sync + 4 workflows
 - [ ] Phase 4: Master Excel reads
@@ -71,18 +71,30 @@ Master Excel: append-only in v1.
 - 2026-05-20: Dashboard shell (sidebar + header + Backup button + auth-aware user info). Home page placeholder; Phase 8 fills in widgets.
 - 2026-05-20: `railway.toml`, `nixpacks.toml` (with `postgresql_16` for pg_dump), `requirements.txt`, `.env.local.example`, `next.config.ts` (output: 'standalone' per inbound-tracker ec15a33).
 - 2026-05-20: Build green — `npx tsc --noEmit` zero errors, `vitest run` 34/34 pass, `npx next build` clean (9 routes resolved). Ready to commit + push + deploy.
+- 2026-05-20: Phase 1 committed (`45a48ae`) and pushed.
+- 2026-05-21: No-default-credentials rule landed (`d2ef020`) — `scripts/seed-users.ts` requires per-user `SEED_<NAME>_PASSWORD` env vars and skips users whose var is unset. No fallback passwords. AGENTS.md updated with Hard Rule. `secrets-bootstrap.txt` gitignored.
+- 2026-05-21: Railway app service `hoeck-team-dashboard` created in the existing project, source = GitHub repo `reedlabarcb/hoeck-team-dashboard@main`. Env vars set: `DATABASE_URL=${{Postgres.DATABASE_URL}}` (reference), `SESSION_PASSWORD` (48-char random), `SEED_REED_PASSWORD` (24-char random, also written to local gitignored `secrets-bootstrap.txt`), `NODE_ENV=production`.
+- 2026-05-21: First deploy attempt failed on `pip install -r requirements.txt` (PEP 668 — Nix's immutable `/nix/store`). Fix (`23ed550`): swap pip-based openpyxl install for Nix's `python311Packages.openpyxl`; drop pip from build phase entirely.
+- 2026-05-21: **Phase 1 deployed.** Public URL: `https://hoeck-team-dashboard-production.up.railway.app`. Commit `23ed550`. `/api/health` returns 200, aggregate `degraded` (0 failed, 7 warned, 1 ok). Postgres check green: PostgreSQL 18.4, db size ~8 MB, project/environment metadata populated. `startCommand` ran `db:migrate` (3 tables created) + `seed:users` (reed inserted, mike/jack/nadya skipped per env vars) + `next start`. App ready in 69ms.
 
 ## Known Issues / Next Up
 - **Backup story is incomplete.** Railway Hobby plan has zero Postgres backups. Phase 1 ships `/api/export/all` (manual ZIP) as the only safety net. `scripts/backup-db.ts` is stubbed (pg_dump → local) with `TODO: upload to Box` — full weekly cron to be wired end of Phase 2 once Box OAuth is live. Cron entry in `railway.toml` is commented out until then.
-- **DB credentials exposed in earlier shell output.** Railway-generated Postgres password leaked into Claude Code transcript during initial `railway variables` call. Acceptable risk for Phase 1 (empty dev DB), rotate before Phase 7 when real notes/tags data lands.
+- **Credentials exposed in this transcript — rotate before Phase 7.**
+   1. Postgres password (Railway-generated) leaked in initial `railway variables --json` output.
+   2. `SESSION_PASSWORD` leaked when verifying env vars via `railway variables --service hoeck-team-dashboard` (CLI shows full values).
+   3. `SEED_REED_PASSWORD` leaked the same way.
+   All three are acceptable for Phase 1 (empty DB, only Reed seeded, no real data) but MUST be rotated before any client data lands in Phase 7. Rotation procedure: regenerate, `railway variables --service ... --set`, force redeploy. For `SEED_REED_PASSWORD` to actually take effect, the existing users row must be deleted first (seed is `ON CONFLICT DO NOTHING`).
+- **Password rotation has no UI yet (Phase 7).** Today the only way to rotate Reed's password is: delete his row in Postgres via Railway DB shell, change `SEED_REED_PASSWORD`, redeploy. We'll add a proper "change password" flow in Phase 7.
+- **`secrets-bootstrap.txt` exists locally with Reed's initial password.** Path: `C:\dev\hoeck-team-dashboard\secrets-bootstrap.txt` (gitignored). DELETE this file after Reed has rotated his password.
+- **`python_bridge` health check is yellow on Railway.** Nix's `python311Packages.openpyxl` is installed but isn't on the bare `python` binary's `sys.path` — `python -c "import openpyxl"` fails. Acceptable for Phase 1. Fix in Phase 4 by switching to a wrapped python: `(python311.withPackages (ps: with ps; [ openpyxl ]))` in `nixpacks.toml`.
 - **shadcn/ui not yet initialized.** Deferred to start of Phase 2 (will run `npx shadcn@latest init` then).
-- **Migrations run only on Railway deploy.** CBRE corp firewall blocks outbound TCP to `kodama.proxy.rlwy.net:51241` so `npm run db:migrate` can't run from the dev laptop. `railway.toml`'s `startCommand` is `npm run db:migrate && npm run seed:users && npm start` so it runs every deploy from inside Railway's private network. `/api/health` warns (yellow) instead of fails when Postgres is unreachable from a dev host.
+- **Migrations run only on Railway deploy.** CBRE corp firewall blocks outbound TCP to `kodama.proxy.rlwy.net:51241` so `npm run db:migrate` can't run from the dev laptop. `railway.toml`'s `startCommand` is `npm run db:migrate && npm run seed:users && npm start` so it runs every deploy from inside Railway's private network. `/api/health` warns (yellow) instead of fails when Postgres is unreachable from a dev host. **Verified working 2026-05-21 — first deploy ran migrations + seed correctly.**
 - **Local dev DB option not yet set up.** If laptop-side UI iteration with live data becomes necessary (probably never in Phase 1, possibly in Phase 2+), spin up Docker Postgres locally and set `DATABASE_URL` to `postgres://localhost:5432/...`. Defer this decision until it actually hurts.
-- **Phase 1 verification happens on the deployed URL, not localhost.** End-to-end smoke (login flow, `/health`, BackupButton) tested via HTTPS against `https://hoeck-team-dashboard.up.railway.app` after deploy.
 
 ## Next Up
-1. Finish Phase 1 (Steps 10–23): Drizzle schemas + first migration; auth; React Query providers; LastUpdated component; health check; export endpoint; dashboard shell; smoke test; commit + push.
-2. Phase 2 kickoff: Box safe wrapper (read methods), folder walker, `box_folder_index` table, `/files` page, AND wire the `backup:weekly` cron to upload to a dedicated Box backup folder.
+1. **Browser smoke test** (Reed runs): visit https://hoeck-team-dashboard-production.up.railway.app → log in as `reed.labar@cbre.com` with the password in `secrets-bootstrap.txt` → confirm dashboard shell, Backup ZIP download, `/health` page, logout all work. Then rotate Reed's password.
+2. **Phase 2 kickoff** (paused until user authorizes): Box developer-console walkthrough → `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, `BOX_ACCESS_TOKEN`, `BOX_REFRESH_TOKEN`, `BOX_TENANTS_CHAPMANHOECK_FOLDER_ID`. Then: Box safe wrapper read methods, folder walker w/ convention parsing, `box_folder_index` table, `/files` page, manual "Refresh from Box" re-index. Also wire the `backup:weekly` cron to upload `pg_dump` output to a dedicated Box backup folder (un-comment the cron entry in `railway.toml`).
+3. **Phase 4 prep:** switch nixpacks to `python311.withPackages (ps: with ps; [ openpyxl ])` so `python -c "import openpyxl"` works and `python_bridge` goes green.
 
 ## Key Decisions
 - Postgres (managed Railway), not SQLite — directly motivated by golf-bd SQLite-on-volume backup machinery (commit `156aa51`)
@@ -99,11 +111,14 @@ Master Excel: append-only in v1.
 
 ## Railway Deployment
 - Project: `hoeck-team-dashboard` (id `07664849-ca0a-485a-a579-0ceff99ce6d6`)
-- Postgres add-on (managed) — `postgres-volume` mounted at `/var/lib/postgresql/data` (5 GB)
-- Daily cron 4 AM Pacific (12:00 UTC) runs `npm run sync:all` (Phase 3 onwards)
+- Postgres service (id `d45dca9d-9345-4660-83ce-aeb8c9a2fc2c`) — `postgres-volume` mounted at `/var/lib/postgresql/data` (5 GB)
+- App service `hoeck-team-dashboard` (id `e8aa72d8-9b67-492a-b1c5-e6bb75ea4d3b`) — GitHub-linked to `reedlabarcb/hoeck-team-dashboard@main`, auto-deploys on push
+- **Public URL:** https://hoeck-team-dashboard-production.up.railway.app
+- **Last deployed commit:** `23ed550` (2026-05-21)
+- Daily cron 4 AM Pacific (12:00 UTC) runs `npm run sync:all` (no-op stub until Phase 3)
 - Weekly cron 5 AM Pacific Sunday (13:00 UTC) for `npm run backup:weekly` — **commented out until Phase 2**
-- Env vars in Railway dashboard
-- Healthcheck path: `/api/health`
+- Env vars in Railway dashboard (DATABASE_URL is a reference to `${{Postgres.DATABASE_URL}}`)
+- Healthcheck path: `/api/health` — returns 200 even when degraded (warnings); 503 only on real failures
 
 ## Session Start Ritual (MANDATORY)
 1. `git status` — any uncommitted changes?
