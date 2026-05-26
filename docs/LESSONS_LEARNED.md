@@ -76,3 +76,32 @@ The following came out of mining the prior repos and are worth holding onto even
 9. **Global 401 handler reloads the page.** Don't let `Unauthorized` surface in a component — reload to the login screen.
 
 10. **DB credentials in tool output stay in the transcript.** Rotate Postgres passwords before any real data lands.
+
+11. **Phase 2 — Postgres connection pool leak in `health-checks.ts`.**
+    The original `/api/health` handler created `new Pool()` on every invocation instead
+    of using the singleton from `lib/db/index.ts`. TanStack Query polled `/api/health`
+    every 15 s, leaking one connection per call. Within ~5 minutes, Postgres rejected
+    new connections with error code `53300` (`sorry, too many clients already`), which
+    then **masked the actual Box walker bug** — every unrelated query also failed with
+    the same error, making the surface symptom look like a walker problem when it was
+    actually exhausted connections.
+
+    Compounding factor: `lib/db/index.ts`'s `getPool()` only cached on `globalThis` in
+    development (`NODE_ENV !== 'production'`). In production, every call also created
+    a fresh `Pool`, so even routes that "used the singleton" leaked.
+
+    **Fix:**
+    - Route handlers and library modules must **NEVER** instantiate their own `Pool`.
+      Only CLI scripts that exit after completing (e.g. `lib/db/migrate.ts`,
+      `scripts/seed-users.ts`, `scripts/backup-export.ts`) may do so.
+    - `getPool()` caches on `globalThis` in **all** environments, not just dev.
+    - Pool capped at `max: 10` to stay below Railway Hobby Postgres's ~22 connection
+      limit, with `connectionTimeoutMillis: 5_000`.
+
+    **Verification:** `git grep -n 'new Pool\|drizzle(' lib/ app/` should show exactly
+    one `Pool` creation in `lib/db/index.ts`. Any other line outside `lib/db/` or
+    `scripts/` is a leak waiting to happen.
+
+    **Lesson:** always `git grep` for `new Pool` outside `lib/db/` and `scripts/`
+    before merging anything that touches the DB. The pre-commit hook now enforces
+    this automatically — see `.husky/pre-commit`.
