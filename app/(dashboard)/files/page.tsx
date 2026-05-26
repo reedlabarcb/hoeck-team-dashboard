@@ -100,14 +100,41 @@ export default function FilesPage() {
     enabled: connection.data?.connected === true,
   });
 
+  // Cap a single reindex attempt at 5 min from the browser's perspective. The route's
+  // own maxDuration is 300s; if it ever returns nothing within that window (proxy timeout,
+  // crashed walker, etc.), the user shouldn't be stuck on an infinite spinner. AbortController
+  // surfaces this as a TimeoutError the UI can show + offer to retry.
+  const REINDEX_TIMEOUT_MS = 5 * 60 * 1000;
   const reindex = useMutation({
     mutationFn: async () => {
-      const res = await fetch('/api/box/reindex', { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.message || `Reindex failed: ${res.status}`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REINDEX_TIMEOUT_MS);
+      try {
+        const res = await fetch('/api/box/reindex', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 412 && data.error === 'box_not_connected') {
+            throw new Error('Box not connected. Click "Connect Box" again.');
+          }
+          if (res.status === 412 && data.error === 'box_auth_expired') {
+            throw new Error('Box session expired. Click "Connect Box" to reconnect.');
+          }
+          throw new Error(data.message || `Reindex failed: HTTP ${res.status}`);
+        }
+        return res.json();
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          throw new Error(
+            'Walker timed out after 5 minutes. Check Activity Feed for details, then Retry.',
+          );
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
       }
-      return res.json();
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['box'] });
@@ -193,14 +220,27 @@ export default function FilesPage() {
           placeholder="Search across all indexed folders…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none"
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 focus:border-gray-500 focus:outline-none"
         />
       </div>
 
       {/* Reindex error surface */}
       {reindex.isError && (
-        <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          Refresh failed: {(reindex.error as Error).message}
+        <div className="mb-3 flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          <div className="min-w-0">
+            <div className="font-medium">Refresh failed</div>
+            <div className="mt-0.5 text-xs">{(reindex.error as Error).message}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              reindex.reset();
+              reindex.mutate();
+            }}
+            className="shrink-0 rounded border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100"
+          >
+            Retry
+          </button>
         </div>
       )}
       {reindex.isSuccess && reindex.data && (

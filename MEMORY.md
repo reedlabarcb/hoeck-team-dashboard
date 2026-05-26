@@ -34,7 +34,7 @@ Master Excel: append-only in v1.
 
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
-- [x] Phase 2: Box folder index — code complete (P2.1-P2.8), P2.9 (weekly pg_dump cron) deferred. Awaiting deploy + browser smoke.
+- [x] Phase 2: Box folder index — **STABLE** as of 2026-05-26. OAuth verified end-to-end (Reed.LaBar@cbre.com), Postgres pool leak fixed (commit e541706), bigint overflow on size_bytes fixed (commit b2502f8), walker observability + 5min frontend timeout + retry + placeholder visibility (this commit). P2.9 (weekly pg_dump cron) deferred to a focused mini-phase.
 - [ ] Phase 3: RealNex sync + 4 workflows
 - [ ] Phase 4: Master Excel reads
 - [ ] Phase 5: Master Excel appends
@@ -81,6 +81,11 @@ Master Excel: append-only in v1.
 - 2026-05-21: Phase 2 backend code committed (`ed24359`): user_box_tokens + AES-256-GCM crypto, Box OAuth client + token-refresh helper, /api/auth/box/connect + /callback routes, Box safe wrapper read methods (listFolder/getFolder/getFile/getFileVersions/downloadFile/searchFolderTree), folder-name parser, box_folder_index schema, BFS walker. 62/62 vitest pass. `lib/db/index.ts` refactored to lazy-init via Proxy so tests don't need DATABASE_URL.
 - 2026-05-21: Phase 2 UI + sync (committing): /files page (browser, breadcrumb, search, click-through), `<ConnectBoxBanner />`, `<BoxRefreshButton />`, /api/box/{connection,folders,reindex} routes, scripts/sync-cron.ts (real impl replaces Phase 1 stubs). Daily cron now indexes Box. Build clean, 14 routes resolved.
 - 2026-05-21: Box credentials in Railway env: `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, `BOX_TENANTS_CHAPMANHOECK_FOLDER_ID=346493191102`, `BOX_TOKEN_ENCRYPTION_KEY` (32-byte AES-256 base64). All four added to rotate-before-Phase-7 list (CID + secret were exposed in transcript paste, encryption key + folder ID flagged for completeness).
+- 2026-05-21: Browser smoke confirmed: login, dashboard shell, /files, "Connect Box" → consent → callback flow all work. First "Refresh from Box" surfaced bigint overflow on `box_folder_index.size_bytes` (Clients folder rollup = ~195 GB, overflows int4).
+- 2026-05-26: Bug fix `b2502f8` — size_bytes column migrated integer → bigint(mode: 'number'). Migration 0003_superb_domino.sql.
+- 2026-05-26: Bug fix `e541706` — Postgres pool leak in lib/health-checks.ts (created new Pool() per call; TanStack Query polling at 15 s exhausted connections in ~5 min, masked other bugs as 53300 "too many clients"). Refactored to use shared singleton from lib/db; also fixed lib/db/index.ts to cache pool in ALL environments (was dev-only). Pool capped at max: 10 with 5s connectionTimeoutMillis. Pre-commit hook extended (commit `657a019`) to grep for `new Pool(` outside lib/db/ and scripts/. LESSONS_LEARNED.md entry #11 documents the post-mortem.
+- 2026-05-26: UX fix (this commit) — walker now logs at start, every 50 indexed items, and on finish. /api/box/reindex route logs entry/exit. Frontend mutation enforces 5-min AbortController timeout so the spinner can't hang forever; on timeout the user sees "Walker timed out — see Activity Feed" with a Retry button. BoxRefreshButton now shows elapsed time (mm:ss) alongside the spinner. /files search input gets `placeholder:text-gray-500` so the placeholder is readable.
+- 2026-05-26: **Phase 2 declared stable.** All known bugs resolved; observability in place for future walker issues.
 
 ## Known Issues / Next Up
 - **Backup story is incomplete.** Railway Hobby plan has zero Postgres backups. Phase 1 ships `/api/export/all` (manual ZIP) as the only safety net. `scripts/backup-db.ts` is stubbed (pg_dump → local) with `TODO: upload to Box` — full weekly cron to be wired end of Phase 2 once Box OAuth is live. Cron entry in `railway.toml` is commented out until then.

@@ -33,10 +33,13 @@ export async function POST() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  console.log(`[reindex] start userId=${session.user.id} email=${session.user.email}`);
+
   let rootFolderId: string;
   try {
     rootFolderId = requireEnv('BOX_TENANTS_CHAPMANHOECK_FOLDER_ID');
   } catch (err) {
+    console.error(`[reindex] env error: ${err instanceof Error ? err.message : err}`);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'env missing' },
       { status: 500 },
@@ -48,6 +51,9 @@ export async function POST() {
       userId: session.user.id,
       rootFolderId,
     });
+    console.log(
+      `[reindex] success userId=${session.user.id} walkId=${result.walkId} indexed=${result.indexedCount} duration=${result.durationMs}ms`,
+    );
     await logActivity({
       actorUserId: session.user.id,
       action: 'box.reindex',
@@ -63,17 +69,23 @@ export async function POST() {
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof BoxNotConnectedError) {
+      console.warn(`[reindex] box_not_connected userId=${session.user.id}`);
       return NextResponse.json(
         { error: 'box_not_connected', message: err.message },
         { status: 412 }, // precondition failed: user must Connect Box first
       );
     }
     if (err instanceof BoxAuthExpiredError) {
+      console.warn(`[reindex] box_auth_expired userId=${session.user.id}`);
       return NextResponse.json(
         { error: 'box_auth_expired', message: err.message },
         { status: 412 },
       );
     }
+    console.error(
+      `[reindex] walker_failed userId=${session.user.id}: ${err instanceof Error ? err.message : 'unknown'}`,
+      err,
+    );
     await logActivity({
       actorUserId: session.user.id,
       action: 'box.reindex_failed',

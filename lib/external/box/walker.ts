@@ -68,13 +68,21 @@ export async function walkBoxTree(opts: {
   const walkId = randomUUID();
   const startedAt = new Date();
 
+  console.log(
+    `[walker] start walkId=${walkId} userId=${userId} rootFolderId=${rootFolderId} maxDepth=${maxDepth}`,
+  );
+
   // Look up the root folder so we can capture its name + put it in the index too.
   const root = await getFolder(userId, rootFolderId);
   if (!root) {
+    console.error(
+      `[walker] root folder ${rootFolderId} returned null from getFolder — aborting walk walkId=${walkId}`,
+    );
     throw new Error(
       `Box root folder ${rootFolderId} not accessible. Verify BOX_TENANTS_CHAPMANHOECK_FOLDER_ID + that the user has Box access to it.`,
     );
   }
+  console.log(`[walker] root folder resolved: name="${root.name}" id=${root.id}`);
 
   // Insert root row first.
   await upsertRow({
@@ -104,6 +112,8 @@ export async function walkBoxTree(opts: {
     },
   ];
   let indexedCount = 1;
+  let lastProgressLog = 1;
+  const PROGRESS_EVERY = 50;
 
   while (queue.length > 0) {
     if (maxItems && indexedCount >= maxItems) break;
@@ -114,7 +124,10 @@ export async function walkBoxTree(opts: {
       children = await listFolder(userId, cur.boxId);
     } catch (err) {
       // Log and continue — one bad folder shouldn't abort the whole walk.
-      console.error(`[walker] failed to list folder ${cur.boxId} (${cur.pathSegments.join('/')})`, err);
+      console.error(
+        `[walker] listFolder failed for "${cur.pathSegments.join('/')}" (id=${cur.boxId}, depth=${cur.depth}) walkId=${walkId}:`,
+        err instanceof Error ? err.message : err,
+      );
       continue;
     }
 
@@ -145,27 +158,43 @@ export async function walkBoxTree(opts: {
         !!child.url &&
         MASTER_SUBLEASE_KEYWORDS.some((k) => child.url!.toLowerCase().includes(k.toLowerCase()));
 
-      await upsertRow({
-        walkId,
-        boxId: child.id,
-        boxType: child.type,
-        name: child.name,
-        parentBoxId: cur.boxId,
-        depth: cur.depth + 1,
-        pathSegments: [...cur.pathSegments, child.name],
-        boxModifiedAt: child.modifiedAt,
-        sizeBytes: child.size,
-        webLinkUrl: child.url,
-        isSubleaseShortcut,
-        yearStart: parsed?.yearStart,
-        yearEnd: parsed?.yearEnd,
-        dealType: parsed?.dealType,
-        address: parsed?.address,
-        clientFolderName: childClient,
-        isMtClient: childIsMt,
-        marketSubfolder: childMarket,
-      });
+      try {
+        await upsertRow({
+          walkId,
+          boxId: child.id,
+          boxType: child.type,
+          name: child.name,
+          parentBoxId: cur.boxId,
+          depth: cur.depth + 1,
+          pathSegments: [...cur.pathSegments, child.name],
+          boxModifiedAt: child.modifiedAt,
+          sizeBytes: child.size,
+          webLinkUrl: child.url,
+          isSubleaseShortcut,
+          yearStart: parsed?.yearStart,
+          yearEnd: parsed?.yearEnd,
+          dealType: parsed?.dealType,
+          address: parsed?.address,
+          clientFolderName: childClient,
+          isMtClient: childIsMt,
+          marketSubfolder: childMarket,
+        });
+      } catch (err) {
+        // Per-row upsert failures should never abort the whole walk. Log loudly with
+        // identifying info so we can diagnose schema mismatches, oversized values, etc.
+        console.error(
+          `[walker] upsert failed for "${child.name}" (id=${child.id}, type=${child.type}, parent="${cur.pathSegments.join('/')}") walkId=${walkId}:`,
+          err instanceof Error ? err.message : err,
+        );
+        continue;
+      }
       indexedCount += 1;
+      if (indexedCount - lastProgressLog >= PROGRESS_EVERY) {
+        console.log(
+          `[walker] progress walkId=${walkId} indexed=${indexedCount} queueRemaining=${queue.length} depth=${cur.depth + 1}`,
+        );
+        lastProgressLog = indexedCount;
+      }
 
       // Recurse into folders only — don't enqueue files or web_links.
       // Don't recurse past maxDepth.
@@ -184,6 +213,9 @@ export async function walkBoxTree(opts: {
   }
 
   const finishedAt = new Date();
+  console.log(
+    `[walker] done walkId=${walkId} indexed=${indexedCount} duration=${finishedAt.getTime() - startedAt.getTime()}ms root="${root.name}"`,
+  );
 
   // Update system_state.last_sync_box so the frontend polling sees the new index.
   await db
