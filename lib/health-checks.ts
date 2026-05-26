@@ -14,7 +14,8 @@
  */
 
 import { execSync } from 'node:child_process';
-import { Pool } from 'pg';
+import { sql } from 'drizzle-orm';
+import { db } from './db';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'not_configured';
 
@@ -69,26 +70,28 @@ export async function checkPostgres(): Promise<CheckResult> {
   }
 
   const isProductionRailway = process.env.RAILWAY_ENVIRONMENT === 'production';
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL.includes('railway.internal')
-      ? undefined
-      : { rejectUnauthorized: false },
-    connectionTimeoutMillis: 5_000, // fail fast on firewall-blocked hosts
-  });
+
+  // IMPORTANT: Reuse the shared singleton pool from lib/db. Do NOT create a new Pool here.
+  // The original implementation created a new Pool on every call, and TanStack Query polls
+  // /api/health every ~15 s, leaking one connection per call. Within ~5 min Postgres
+  // rejected new connections with error code 53300 ("sorry, too many clients already"),
+  // which then masked unrelated query failures (e.g. the Box walker insert) as the same
+  // "too many clients" error.
+  // See docs/LESSONS_LEARNED.md "Phase 2 — Postgres connection pool leak".
 
   try {
-    const [verRow] = (await pool.query('SELECT version()')).rows as { version: string }[];
-    const [sizeRow] = (await pool.query("SELECT pg_database_size(current_database()) AS size")).rows as {
-      size: string;
-    }[];
+    const verResult = await db.execute(sql`SELECT version()`);
+    const verRow = (verResult.rows[0] ?? {}) as { version?: string };
+    const sizeResult = await db.execute(sql`SELECT pg_database_size(current_database()) AS size`);
+    const sizeRow = (sizeResult.rows[0] ?? {}) as { size?: string | number };
+
     return {
       name: 'postgres',
       status: 'ok',
       detail: 'reachable',
       metadata: {
-        version: verRow.version.split(/\s+/, 2).join(' '),
-        database_size_bytes: Number(sizeRow.size),
+        version: verRow.version ? verRow.version.split(/\s+/, 2).join(' ') : '(unknown)',
+        database_size_bytes: sizeRow.size !== undefined ? Number(sizeRow.size) : null,
         project: process.env.RAILWAY_PROJECT_NAME ?? '(local)',
         environment: process.env.RAILWAY_ENVIRONMENT ?? '(local)',
       },
@@ -97,7 +100,7 @@ export async function checkPostgres(): Promise<CheckResult> {
     const msg = err instanceof Error ? err.message : String(err);
     // On dev hosts where the public proxy is firewall-blocked (CBRE corp), this is expected
     // and not a real failure. On Railway, same error = real outage.
-    if (!isProductionRailway && /ETIMEDOUT|ECONNREFUSED|ENETUNREACH/.test(msg)) {
+    if (!isProductionRailway && /ETIMEDOUT|ECONNREFUSED|ENETUNREACH|timeout/i.test(msg)) {
       return {
         name: 'postgres',
         status: 'warn',
@@ -106,8 +109,6 @@ export async function checkPostgres(): Promise<CheckResult> {
       };
     }
     return { name: 'postgres', status: 'fail', detail: msg };
-  } finally {
-    await pool.end().catch(() => {});
   }
 }
 

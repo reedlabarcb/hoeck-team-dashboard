@@ -33,15 +33,23 @@ function buildPool(): Pool {
     ssl: process.env.DATABASE_URL.includes('railway.internal')
       ? undefined
       : { rejectUnauthorized: false },
-    max: 5,
+    // Cap at 10 to stay well below Railway Hobby Postgres's ~22 connection limit.
+    // This pool is shared across the entire app process; per-request handlers must
+    // NEVER instantiate their own Pool (see docs/LESSONS_LEARNED.md Phase 2 entry).
+    max: 10,
     idleTimeoutMillis: 30_000,
+    // Fail fast when the Postgres host is unreachable (e.g., dev laptop on corp network).
+    connectionTimeoutMillis: 5_000,
   });
 }
 
 export function getPool(): Pool {
+  // Cache on globalThis in ALL environments (not just dev). Without this, each call to
+  // getPool() in production builds a fresh Pool — the original cause of the Phase 2
+  // connection-pool leak. The fix is to cache unconditionally.
   if (globalForDb.__pgPool) return globalForDb.__pgPool;
   const p = buildPool();
-  if (process.env.NODE_ENV !== 'production') globalForDb.__pgPool = p;
+  globalForDb.__pgPool = p;
   return p;
 }
 
