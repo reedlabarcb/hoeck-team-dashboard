@@ -32,6 +32,34 @@ if [ -n "$VIOLATIONS" ]; then
   exit 1
 fi
 
+# ----------------------------------------------------------------------------
+# Block `new Pool(` outside lib/db/ and scripts/.
+# Reason: Phase 2 connection-pool leak — see docs/LESSONS_LEARNED.md.
+# Route handlers and library modules must use the shared singleton from lib/db/index.ts.
+# Only CLI scripts (which exit after running) may create their own Pool.
+# Test files are also exempt (they may need their own fixtures).
+# ----------------------------------------------------------------------------
+POOL_VIOLATIONS=$(
+  git diff --cached --name-only --diff-filter=ACM \
+    | grep -E "\.(ts|tsx|js|mjs)$" \
+    | grep -v "^lib/db/" \
+    | grep -v "^scripts/" \
+    | grep -v "\.test\." \
+    | xargs -r grep -l -E "new[[:space:]]+Pool[[:space:]]*\(" 2>/dev/null || true
+)
+
+if [ -n "$POOL_VIOLATIONS" ]; then
+  echo ""
+  echo "ERROR: 'new Pool(' found outside lib/db/ and scripts/:"
+  echo "$POOL_VIOLATIONS"
+  echo ""
+  echo "Route handlers and library modules must NEVER instantiate their own Postgres Pool."
+  echo "Import the shared singleton: import { db } from '@/lib/db'"
+  echo "See docs/LESSONS_LEARNED.md \"Phase 2 — Postgres connection pool leak\" for context."
+  echo "If you have a legitimate reason (e.g. a new CLI script), put it under scripts/."
+  exit 1
+fi
+
 # Run safe-wrapper forbidden-method assertions before allowing the commit.
 # These tests fail if anyone exports a forbidden method from lib/external/*/safe.ts.
 if [ -f "node_modules/.bin/vitest" ]; then
