@@ -197,21 +197,46 @@ export default function FilesPage() {
         </div>
       </div>
 
-      {/* Breadcrumb */}
-      <nav className="mb-4 flex items-center gap-1 text-sm text-gray-700">
-        {breadcrumb.map((b, i) => (
-          <span key={i} className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => navigateBreadcrumb(i)}
-              className="rounded px-1.5 py-0.5 hover:bg-gray-100"
-            >
-              {b.name}
-            </button>
-            {i < breadcrumb.length - 1 && <span className="text-gray-300">/</span>}
-          </span>
-        ))}
-      </nav>
+      {/* Back button + Breadcrumb */}
+      <div className="mb-4 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => navigateBreadcrumb(breadcrumb.length - 2)}
+          disabled={breadcrumb.length <= 1}
+          className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          title={breadcrumb.length <= 1 ? 'Already at the root folder' : `Back to ${breadcrumb[breadcrumb.length - 2]?.name}`}
+          aria-label="Back one folder"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+          Back
+        </button>
+        <nav className="flex items-center gap-1 text-sm text-gray-700">
+          {breadcrumb.map((b, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => navigateBreadcrumb(i)}
+                className="rounded px-1.5 py-0.5 hover:bg-gray-100"
+              >
+                {b.name}
+              </button>
+              {i < breadcrumb.length - 1 && <span className="text-gray-300">/</span>}
+            </span>
+          ))}
+        </nav>
+      </div>
 
       {/* Search */}
       <div className="mb-3">
