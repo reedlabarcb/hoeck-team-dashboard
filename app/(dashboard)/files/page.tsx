@@ -3,16 +3,26 @@
 /**
  * /files — Box folder browser.
  *
- * Two states:
+ * URL-driven navigation:
+ *   - /files            → root (Tenants – ChapmanHoeck)
+ *   - /files?folder=ID  → inside that folder
+ *
+ * Drilling in does `router.push('/files?folder=...')` so the browser back/forward
+ * buttons work naturally and folder URLs are shareable. The ← Back button calls
+ * `router.back()`. Direct deep-link loads work because the breadcrumb is fetched
+ * from /api/box/folder-chain (a single recursive CTE query).
+ *
+ * Two render states:
  *   1. User has no Box connection → show <ConnectBoxBanner /> + nothing else
  *   2. User is connected → show folder browser with breadcrumb + search + index data
  *
- * Data comes from box_folder_index (Postgres mirror), not from Box at click time.
- * For freshness: <LastUpdated /> + Refresh button which calls POST /api/box/reindex.
+ * Data comes from box_folder_index (Postgres mirror), not Box directly.
+ * Freshness: <LastUpdated /> + Refresh button which calls POST /api/box/reindex.
  */
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { LastUpdated } from '@/components/LastUpdated';
 import { ConnectBoxBanner } from '@/components/ConnectBoxBanner';
@@ -46,6 +56,13 @@ interface ConnectionState {
   refreshed_at?: string;
 }
 
+interface ChainEntry {
+  box_id: string;
+  name: string;
+  parent_box_id: string | null;
+  depth: number;
+}
+
 async function fetchConnection(): Promise<ConnectionState> {
   const res = await fetch('/api/box/connection', { cache: 'no-store' });
   if (!res.ok) throw new Error(`Connection check failed: ${res.status}`);
@@ -60,6 +77,18 @@ async function fetchFolders(opts: { parent?: string; q?: string }): Promise<BoxF
   if (!res.ok) throw new Error(`Folders fetch failed: ${res.status}`);
   const data = (await res.json()) as { entries: BoxFolderRow[] };
   return data.entries;
+}
+
+async function fetchChain(folderId?: string): Promise<ChainEntry[]> {
+  const params = new URLSearchParams();
+  if (folderId) params.set('id', folderId);
+  const res = await fetch(`/api/box/folder-chain?${params.toString()}`, { cache: 'no-store' });
+  if (!res.ok) {
+    if (res.status === 404) return []; // unknown folder — render just current segment with placeholder
+    throw new Error(`Folder-chain fetch failed: ${res.status}`);
+  }
+  const data = (await res.json()) as { chain: ChainEntry[] };
+  return data.chain;
 }
 
 function fmtBytes(n: number | null): string {
@@ -81,12 +110,17 @@ function boxUrl(row: BoxFolderRow): string {
   return `https://cbre.box.com/file/${row.boxId}`;
 }
 
-export default function FilesPage() {
+function hrefForFolder(folderId?: string): string {
+  return folderId ? `/files?folder=${encodeURIComponent(folderId)}` : '/files';
+}
+
+function FilesPageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
-  const [parent, setParent] = useState<string | undefined>(undefined);
-  const [breadcrumb, setBreadcrumb] = useState<{ boxId: string | undefined; name: string }[]>([
-    { boxId: undefined, name: 'Tenants – ChapmanHoeck' },
-  ]);
+
+  // The folder ID we're currently viewing. undefined = root.
+  const folderId = searchParams.get('folder') ?? undefined;
   const [query, setQuery] = useState('');
 
   const connection = useQuery({
@@ -94,9 +128,17 @@ export default function FilesPage() {
     queryFn: fetchConnection,
   });
 
+  // Ancestor chain for the breadcrumb (single recursive CTE on the server).
+  const chain = useQuery({
+    queryKey: ['box', 'chain', folderId ?? 'root'],
+    queryFn: () => fetchChain(folderId),
+    enabled: connection.data?.connected === true,
+  });
+
+  // Children of the current folder (or search results if query is non-empty).
   const folders = useQuery({
-    queryKey: ['box', 'folders', { parent, q: query }],
-    queryFn: () => fetchFolders({ parent, q: query || undefined }),
+    queryKey: ['box', 'folders', { parent: folderId, q: query }],
+    queryFn: () => fetchFolders({ parent: folderId, q: query || undefined }),
     enabled: connection.data?.connected === true,
   });
 
@@ -165,17 +207,28 @@ export default function FilesPage() {
       window.open(boxUrl(row), '_blank', 'noopener,noreferrer');
       return;
     }
-    setParent(row.boxId);
-    setBreadcrumb((b) => [...b, { boxId: row.boxId, name: row.name }]);
     setQuery('');
+    router.push(hrefForFolder(row.boxId));
   }
 
-  function navigateBreadcrumb(idx: number) {
-    const target = breadcrumb[idx];
-    setParent(target.boxId);
-    setBreadcrumb((b) => b.slice(0, idx + 1));
+  function navigateToFolder(targetId?: string) {
     setQuery('');
+    router.push(hrefForFolder(targetId));
   }
+
+  // Chain is server-truth: index 0 = root, last = current folder.
+  // If the chain query failed (e.g., unindexed folder), fall back to a one-entry placeholder.
+  const breadcrumb: { boxId?: string; name: string }[] =
+    chain.data && chain.data.length > 0
+      ? chain.data.map((c, i) => ({
+          // Root has parent_box_id NULL — we don't want a ?folder param for it.
+          boxId: i === 0 ? undefined : c.box_id,
+          name: c.name,
+        }))
+      : [{ boxId: undefined, name: 'Tenants – ChapmanHoeck' }];
+
+  const isAtRoot = breadcrumb.length <= 1;
+  const parentForBack = !isAtRoot ? breadcrumb[breadcrumb.length - 2] : undefined;
 
   return (
     <div className="mx-auto max-w-5xl p-6">
@@ -201,10 +254,16 @@ export default function FilesPage() {
       <div className="mb-4 flex items-center gap-3">
         <button
           type="button"
-          onClick={() => navigateBreadcrumb(breadcrumb.length - 2)}
-          disabled={breadcrumb.length <= 1}
+          onClick={() => router.back()}
+          disabled={isAtRoot}
           className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-          title={breadcrumb.length <= 1 ? 'Already at the root folder' : `Back to ${breadcrumb[breadcrumb.length - 2]?.name}`}
+          title={
+            isAtRoot
+              ? 'Already at the root folder'
+              : parentForBack
+                ? `Back to ${parentForBack.name}`
+                : 'Back'
+          }
           aria-label="Back one folder"
         >
           <svg
@@ -227,7 +286,7 @@ export default function FilesPage() {
             <span key={i} className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => navigateBreadcrumb(i)}
+                onClick={() => navigateToFolder(b.boxId)}
                 className="rounded px-1.5 py-0.5 hover:bg-gray-100"
               >
                 {b.name}
@@ -355,5 +414,15 @@ export default function FilesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function FilesPage() {
+  // useSearchParams requires a Suspense boundary for static prerendering. We use a tiny
+  // placeholder while the URL is being resolved on first paint — usually instant.
+  return (
+    <Suspense fallback={<div className="p-8 text-sm text-gray-500">Loading…</div>}>
+      <FilesPageInner />
+    </Suspense>
   );
 }
