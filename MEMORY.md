@@ -34,7 +34,7 @@ Master Excel: append-only in v1.
 
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
-- [x] Phase 2: Box folder index — **STABLE** as of 2026-05-26. OAuth verified end-to-end (Reed.LaBar@cbre.com), Postgres pool leak fixed (commit e541706), bigint overflow on size_bytes fixed (commit b2502f8), walker observability + 5min frontend timeout + retry + placeholder visibility (this commit). P2.9 (weekly pg_dump cron) deferred to a focused mini-phase.
+- [~] Phase 2: Box folder index — initial implementation stable; **async-walker conversion IN PROGRESS** (started 2026-05-27 after 181 GB tree exceeded sync 5-min timeout). 5-commit sequence: schema → worker → UI polling → incremental + cron → breadcrumb fix. P2.9 (weekly pg_dump cron) still deferred.
 - [ ] Phase 3: RealNex sync + 4 workflows
 - [ ] Phase 4: Master Excel reads
 - [ ] Phase 5: Master Excel appends
@@ -49,6 +49,7 @@ Master Excel: append-only in v1.
 - `system_state` (key PK, value jsonb, updated_at) — Phase 1
 - `user_box_tokens` (id, user_id FK, box_user_id, box_login, access_token_encrypted, refresh_token_encrypted, expires_at, …) — Phase 2; AES-256-GCM via `BOX_TOKEN_ENCRYPTION_KEY`
 - `box_folder_index` (id, box_id UNIQUE, box_type enum, name, parent_box_id, depth, path_segments jsonb, year_start/end, deal_type, address, is_mt_client, market_subfolder, is_sublease_shortcut, last_seen_at, last_walk_run_id, …) — Phase 2; mirror of Box folder tree
+- `box_sync_jobs` (id, walk_id, status enum, sync_mode enum, is_force_full, started_at, completed_at, progress_folders_walked, progress_files_indexed, api_calls_made, current_path, total_folders_in_index, error_message, triggered_by, delta_cursor [reserved], metadata jsonb, …) — Phase 2 async walker state. CHECK `triggered_by <> ''`. Composite index on (status, updated_at) for fast orphan-recovery scan. `walk_id` correlates with `box_folder_index.last_walk_run_id`.
 
 ## API Keys / Env Vars (see .env.local.example)
 - DATABASE_URL (Railway public Postgres URL for local dev; Railway injects internal URL in production)
@@ -87,6 +88,8 @@ Master Excel: append-only in v1.
 - 2026-05-26: UX fix (this commit) — walker now logs at start, every 50 indexed items, and on finish. /api/box/reindex route logs entry/exit. Frontend mutation enforces 5-min AbortController timeout so the spinner can't hang forever; on timeout the user sees "Walker timed out — see Activity Feed" with a Retry button. BoxRefreshButton now shows elapsed time (mm:ss) alongside the spinner. /files search input gets `placeholder:text-gray-500` so the placeholder is readable.
 - 2026-05-26: **Phase 2 declared stable.** All known bugs resolved; observability in place for future walker issues.
 - 2026-05-26: UX — `/files` switched to URL-driven folder navigation. `?folder=<box_id>` is now the source of truth. Browser back/forward works natively. Folder URLs are shareable (e.g., paste in Slack). Direct deep-link loads work (breadcrumb fetched via new `/api/box/folder-chain` endpoint — recursive CTE on `box_folder_index`, one query regardless of depth). ← Back button now delegates to `router.back()`. Suspense boundary added around `FilesPageInner` for `useSearchParams`.
+- 2026-05-26: Build hotfix `5851a8d` — `npm run db:migrate` was failing on Railway with `husky: not found` (exit 127). Cause: Nixpacks runs `npm ci` with `NODE_ENV=production`, which skips devDependencies; husky is in devDependencies so the npm `prepare` lifecycle script then fails the whole build. Fix: `"prepare": "husky || true"` — husky still runs locally (devDeps present) but silently no-ops in production.
+- 2026-05-27: Phase 2 stability fix #1 (architectural) **STARTED** — synchronous walker holds the HTTP connection for the duration of a full crawl; on the real 181 GB `Tenants – ChapmanHoeck` tree this exceeds the 5-min frontend timeout and never completes. Converting to async background-job pattern: `box_sync_jobs` table holds job state, POST kicks off + returns immediately, in-process worker updates progress, UI polls. **Commit 1 (this one): schema only.** Architecture locked: (a) in-process Next.js worker (no Redis), (i) mark-failed-no-resume orphan recovery on 10-min-stale-`updated_at`, modified_at-filter incremental sync with weekly full walk. See "Key Decisions" below.
 
 ## Known Issues / Next Up
 - **Backup story is incomplete.** Railway Hobby plan has zero Postgres backups. Phase 1 ships `/api/export/all` (manual ZIP) as the only safety net. `scripts/backup-db.ts` is stubbed (pg_dump → local) with `TODO: upload to Box` — full weekly cron to be wired end of Phase 2 once Box OAuth is live. Cron entry in `railway.toml` is commented out until then.
@@ -117,16 +120,19 @@ Master Excel: append-only in v1.
 - Password auth (no SSO); iron-session 7-day cookies
 - Python bridge for openpyxl (Phase 4)
 - Folder rename only for adding address to deal folders (`renameDealFolder`, scoped)
-- Conversational parser via Anthropic API (Workflow 3, Phase 3)
+- ~~Conversational parser via Anthropic API (Workflow 3, Phase 3)~~ — Anthropic dropped 2026-05-21; structured form only for Workflow 3, manual date entry for Phase 5 lease filing
 - `/api/export/all` = peace of mind, not primary rollback
 - Backup strategy: manual export now, weekly `pg_dump`-to-Box in Phase 2
+- **Box folder walker = in-process Next.js worker (no Redis, no separate service).** State in `box_sync_jobs` Postgres table. Decided 2026-05-27 for the async-job conversion. Trade-off accepted: app redeploys mid-walk lose the walk (mitigated by orphan recovery).
+- **Orphan recovery = mark-failed-no-resume.** On app startup, any `box_sync_jobs` row with `status='running' AND updated_at < NOW() - INTERVAL '10 minutes'` is marked `failed` with `error_message='orphaned by process restart'`. Walker is fast enough that retry-from-scratch is cheaper than checkpoint/resume complexity.
+- **Incremental sync = modified_at filter, NOT Box Events API (v1).** Subsequent walks skip subtrees whose `modified_at` predates the last successful full walk. Doesn't catch deletions — a weekly Railway cron does a full walk to reconcile. Deferred Events API + cursor management to "when this becomes painful, not before."
 
 ## Railway Deployment
 - Project: `hoeck-team-dashboard` (id `07664849-ca0a-485a-a579-0ceff99ce6d6`)
 - Postgres service (id `d45dca9d-9345-4660-83ce-aeb8c9a2fc2c`) — `postgres-volume` mounted at `/var/lib/postgresql/data` (5 GB)
 - App service `hoeck-team-dashboard` (id `e8aa72d8-9b67-492a-b1c5-e6bb75ea4d3b`) — GitHub-linked to `reedlabarcb/hoeck-team-dashboard@main`, auto-deploys on push
 - **Public URL:** https://hoeck-team-dashboard-production.up.railway.app
-- **Last deployed commit:** `23ed550` (2026-05-21)
+- **Last deployed commit:** `5851a8d` (2026-05-26) — auto-deploys on every push to main
 - Daily cron 4 AM Pacific (12:00 UTC) runs `npm run sync:all` (no-op stub until Phase 3)
 - Weekly cron 5 AM Pacific Sunday (13:00 UTC) for `npm run backup:weekly` — **commented out until Phase 2**
 - Env vars in Railway dashboard (DATABASE_URL is a reference to `${{Postgres.DATABASE_URL}}`)

@@ -27,6 +27,14 @@ CREATE TRIGGER user_box_tokens_version_trigger
   BEFORE UPDATE ON user_box_tokens
   FOR EACH ROW EXECUTE FUNCTION update_version_and_timestamp();
 
+-- box_sync_jobs table (Phase 2 background-job pattern)
+-- updated_at advancing on every progress write is the orphan-recovery signal,
+-- so this trigger is critical, not optional.
+DROP TRIGGER IF EXISTS box_sync_jobs_version_trigger ON box_sync_jobs;
+CREATE TRIGGER box_sync_jobs_version_trigger
+  BEFORE UPDATE ON box_sync_jobs
+  FOR EACH ROW EXECUTE FUNCTION update_version_and_timestamp();
+
 -- Future editable tables: add a trigger here as they land.
 -- DROP TRIGGER IF EXISTS notes_version_trigger ON notes;
 -- CREATE TRIGGER notes_version_trigger

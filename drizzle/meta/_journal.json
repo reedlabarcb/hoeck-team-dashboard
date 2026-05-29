@@ -29,6 +29,13 @@
       "when": 1779388914179,
       "tag": "0003_superb_domino",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1780077768294,
+      "tag": "0004_box_sync_jobs",
+      "breakpoints": true
     }
   ]
 }
