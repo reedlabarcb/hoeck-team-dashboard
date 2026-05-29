@@ -20,13 +20,15 @@
  * Freshness: <LastUpdated /> + Refresh button which calls POST /api/box/reindex.
  */
 
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { LastUpdated } from '@/components/LastUpdated';
 import { ConnectBoxBanner } from '@/components/ConnectBoxBanner';
 import { BoxRefreshButton } from '@/components/BoxRefreshButton';
+import { FullWalkConfirmModal } from '@/components/FullWalkConfirmModal';
+import { useBoxSyncStatus } from '@/lib/hooks/useBoxSyncStatus';
 
 interface BoxFolderRow {
   id: string;
@@ -114,6 +116,12 @@ function hrefForFolder(folderId?: string): string {
   return folderId ? `/files?folder=${encodeURIComponent(folderId)}` : '/files';
 }
 
+function formatDurationMin(ms: number): string {
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  const min = Math.round(ms / 60_000);
+  return `${min} min`;
+}
+
 function FilesPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -142,46 +150,78 @@ function FilesPageInner() {
     enabled: connection.data?.connected === true,
   });
 
-  // Cap a single reindex attempt at 5 min from the browser's perspective. The route's
-  // own maxDuration is 300s; if it ever returns nothing within that window (proxy timeout,
-  // crashed walker, etc.), the user shouldn't be stuck on an infinite spinner. AbortController
-  // surfaces this as a TimeoutError the UI can show + offer to retry.
-  const REINDEX_TIMEOUT_MS = 5 * 60 * 1000;
-  const reindex = useMutation({
-    mutationFn: async () => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), REINDEX_TIMEOUT_MS);
-      try {
-        const res = await fetch('/api/box/reindex', {
-          method: 'POST',
-          signal: controller.signal,
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (res.status === 412 && data.error === 'box_not_connected') {
-            throw new Error('Box not connected. Click "Connect Box" again.');
-          }
-          if (res.status === 412 && data.error === 'box_auth_expired') {
-            throw new Error('Box session expired. Click "Connect Box" to reconnect.');
-          }
-          throw new Error(data.message || `Reindex failed: HTTP ${res.status}`);
-        }
-        return res.json();
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          throw new Error(
-            'Walker timed out after 5 minutes. Check Activity Feed for details, then Retry.',
-          );
-        }
-        throw err;
-      } finally {
-        clearTimeout(timer);
+  // Async background-job pattern (P2.15.x):
+  //   - POST /api/box/sync returns 202 immediately with { jobId, status }
+  //   - useBoxSyncStatus polls /api/box/sync/status every 5s while job is queued/running
+  //   - When status flips to 'completed' / 'failed', polling stops + banner appears
+  //   - 5-minute frontend timeout is gone — walks can take however long they need
+  const sync = useBoxSyncStatus({ enabled: connection.data?.connected === true });
+  const isJobActive = sync.job?.status === 'queued' || sync.job?.status === 'running';
+
+  // Track which terminal jobIds the user has already "seen" via the banner so we don't
+  // re-flash the banner if the user navigates away and back. The banner auto-dismisses
+  // after 30 seconds either way.
+  const [acknowledgedJobId, setAcknowledgedJobId] = useState<string | null>(null);
+  const [bannerHidden, setBannerHidden] = useState(false);
+
+  // Auto-dismiss the completion / failure banner after 30s of being visible.
+  useEffect(() => {
+    if (!sync.job || isJobActive) return;
+    if (bannerHidden) return;
+    const id = setTimeout(() => setBannerHidden(true), 30_000);
+    return () => clearTimeout(id);
+  }, [sync.job, isJobActive, bannerHidden]);
+
+  // When a new job starts (different id), reset the banner-hidden flag so its completion
+  // banner is allowed to show. The state-in-effect rule fires here, but this is the
+  // canonical "respond to upstream change" pattern; the alternative (derive everything
+  // from refs) is worse for readability.
+  useEffect(() => {
+    if (isJobActive && sync.job?.id && sync.job.id !== acknowledgedJobId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAcknowledgedJobId(sync.job.id);
+      setBannerHidden(false);
+    }
+  }, [isJobActive, sync.job?.id, acknowledgedJobId]);
+
+  // When polling reveals a completed job, invalidate the folder browser so it refetches.
+  useEffect(() => {
+    if (sync.job?.status === 'completed') {
+      void queryClient.invalidateQueries({ queryKey: ['box', 'folders'] });
+      void queryClient.invalidateQueries({ queryKey: ['box', 'chain'] });
+    }
+  }, [sync.job?.status, queryClient]);
+
+  const [fullWalkModalOpen, setFullWalkModalOpen] = useState(false);
+
+  const startSync = useMutation({
+    mutationFn: async (opts: { mode?: 'full' | 'incremental'; force?: boolean }) => {
+      const params = new URLSearchParams();
+      if (opts.mode) params.set('mode', opts.mode);
+      if (opts.force) params.set('force', 'true');
+      const url = `/api/box/sync${params.toString() ? `?${params.toString()}` : ''}`;
+      const res = await fetch(url, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 202) return data; // Success: 202 Accepted
+      if (res.status === 409) {
+        // Active job already running — just return the data; the polling hook will pick it up.
+        return data;
       }
+      if (res.status === 412 && data.error === 'box_not_connected') {
+        throw new Error('Box not connected. Click "Connect Box" again.');
+      }
+      throw new Error(data.message || data.error || `Sync request failed: HTTP ${res.status}`);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['box'] });
+      // Immediately refetch status so the UI flips to "Syncing…" without waiting 5s.
+      void sync.refetch();
     },
   });
+
+  const startFullWalk = () => {
+    setFullWalkModalOpen(false);
+    startSync.mutate({ mode: 'full' });
+  };
 
   if (connection.isLoading) {
     return <div className="p-8 text-sm text-gray-500">Loading…</div>;
@@ -192,7 +232,7 @@ function FilesPageInner() {
       <div className="mx-auto max-w-3xl p-8">
         <h1 className="text-2xl font-semibold text-gray-900">Files</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Browse <code className="text-xs">Tenants – ChapmanHoeck</code> from Box.
+          Browse <code className="text-xs">Tenants - ChapmanHoeck</code> from Box.
         </p>
         <div className="mt-6">
           <ConnectBoxBanner />
@@ -240,13 +280,35 @@ function FilesPageInner() {
             <span className="font-mono text-gray-700">{connection.data.box_login ?? '(box user)'}</span>
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <LastUpdated query={folders} />
-          <BoxRefreshButton
-            onClick={() => reindex.mutate()}
-            disabled={reindex.isPending}
-            isPending={reindex.isPending}
-          />
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-3">
+            <LastUpdated query={folders} />
+            <BoxRefreshButton
+              onClick={() => startSync.mutate({})}
+              disabled={startSync.isPending}
+              isPending={startSync.isPending || isJobActive}
+              progress={
+                isJobActive && sync.job
+                  ? {
+                      foldersWalked: sync.job.progressFoldersWalked,
+                      filesIndexed: sync.job.progressFilesIndexed,
+                      currentPath: sync.job.currentPath,
+                      syncMode: sync.job.syncMode,
+                    }
+                  : null
+              }
+            />
+          </div>
+          {!isJobActive && !startSync.isPending && (
+            <button
+              type="button"
+              onClick={() => setFullWalkModalOpen(true)}
+              className="text-[11px] text-gray-500 hover:text-gray-800 hover:underline"
+              title="Re-walk all 27k+ folders. Takes ~30 minutes."
+            >
+              Run full walk →
+            </button>
+          )}
         </div>
       </div>
 
@@ -308,18 +370,18 @@ function FilesPageInner() {
         />
       </div>
 
-      {/* Reindex error surface */}
-      {reindex.isError && (
+      {/* POST /api/box/sync error surface (network / 412 / 5xx — NOT job-status failures) */}
+      {startSync.isError && (
         <div className="mb-3 flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
           <div className="min-w-0">
-            <div className="font-medium">Refresh failed</div>
-            <div className="mt-0.5 text-xs">{(reindex.error as Error).message}</div>
+            <div className="font-medium">Couldn&apos;t start sync</div>
+            <div className="mt-0.5 text-xs">{(startSync.error as Error).message}</div>
           </div>
           <button
             type="button"
             onClick={() => {
-              reindex.reset();
-              reindex.mutate();
+              startSync.reset();
+              startSync.mutate({});
             }}
             className="shrink-0 rounded border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100"
           >
@@ -327,13 +389,73 @@ function FilesPageInner() {
           </button>
         </div>
       )}
-      {reindex.isSuccess && reindex.data && (
-        <div className="mb-3 rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
-          Indexed {reindex.data.indexedCount} items from{' '}
-          <span className="font-mono">{reindex.data.rootFolderName}</span> in {reindex.data.durationMs}{' '}
-          ms.
+
+      {/* Job-status banner: shown when latest job is terminal (completed/failed). Auto-dismisses
+          after 30s (see useEffect above). User can dismiss earlier with the × button. */}
+      {sync.job && !isJobActive && !bannerHidden && sync.job.status === 'completed' && (
+        <div className="mb-3 flex items-start justify-between gap-3 rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
+          <div className="min-w-0">
+            <div className="font-medium">Sync complete</div>
+            <div className="mt-0.5 text-xs">
+              {sync.job.totalFoldersInIndex !== null
+                ? `${sync.job.totalFoldersInIndex.toLocaleString()} items now indexed`
+                : `${sync.job.progressFilesIndexed.toLocaleString()} items processed`}
+              {' · '}
+              <span className="capitalize">{sync.job.syncMode}</span> walk
+              {' · '}
+              {sync.job.completedAt && sync.job.startedAt
+                ? formatDurationMin(
+                    new Date(sync.job.completedAt).getTime() - new Date(sync.job.startedAt).getTime(),
+                  )
+                : '—'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setBannerHidden(true)}
+            className="shrink-0 rounded p-0.5 text-green-900 hover:bg-green-100"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
+      {sync.job && !isJobActive && !bannerHidden && sync.job.status === 'failed' && (
+        <div className="mb-3 flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          <div className="min-w-0">
+            <div className="font-medium">Sync failed</div>
+            <div className="mt-0.5 text-xs">
+              {sync.job.errorMessage ?? 'Unknown error. Check Activity Feed for details.'}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setBannerHidden(true);
+                startSync.mutate({});
+              }}
+              className="rounded border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={() => setBannerHidden(true)}
+              className="rounded p-0.5 text-red-800 hover:bg-red-100"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      <FullWalkConfirmModal
+        open={fullWalkModalOpen}
+        onCancel={() => setFullWalkModalOpen(false)}
+        onConfirm={startFullWalk}
+      />
 
       {/* Listing */}
       {folders.isLoading ? (
