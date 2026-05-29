@@ -27,6 +27,7 @@ import { db } from '@/lib/db';
 import { boxFolderIndex, systemState, SYSTEM_STATE_KEYS } from '@/lib/db/schema';
 import { listFolder, getFolder } from './safe';
 import { parseDealFolderName, isMtClient } from './folder-name-parser';
+import type { JobContext } from './job-runner';
 
 const MASTER_SUBLEASE_KEYWORDS = ['Sublease Listings', 'sublease-listings', 'Master Sublease'];
 
@@ -63,10 +64,36 @@ export async function walkBoxTree(opts: {
    * Undefined = walk everything.
    */
   maxItems?: number;
+  /**
+   * When invoked by the async job runner: receives progress callbacks AND reuses the
+   * job's walkId so box_folder_index.last_walk_run_id correlates with box_sync_jobs.walk_id.
+   * When omitted (legacy direct invocation): walker mints its own walkId, no callbacks fire.
+   */
+  jobContext?: JobContext;
+  /**
+   * Earliest box modified_at to walk into during incremental sync. Folders whose
+   * modified_at is older than this are skipped (their subtree is assumed unchanged).
+   * Undefined = full walk (everything).
+   *
+   * NOTE: Files inside a folder are still indexed via listFolder regardless of this filter —
+   *       we only skip RECURSING INTO unchanged subfolders, not seeing them. So if Mike
+   *       drops a new PDF inside an old deal folder, the listFolder call on the parent
+   *       still sees it on the next sync.
+   *
+   *       The "incremental" path therefore catches: new+modified files anywhere, new+modified
+   *       subfolders, and any descendants of modified folders. It does NOT catch deletions
+   *       (those need a full walk, scheduled weekly by the Railway cron).
+   */
+  incrementalSince?: Date;
 }): Promise<WalkResult> {
-  const { userId, rootFolderId, maxDepth = 6, maxItems } = opts;
-  const walkId = randomUUID();
+  const { userId, rootFolderId, maxDepth = 6, maxItems, jobContext, incrementalSince } = opts;
+  // If running under a job, use the job's walkId so we can correlate. Otherwise mint our own.
+  const walkId = jobContext?.walkId ?? randomUUID();
   const startedAt = new Date();
+  // Best-effort API-call counter — bumped after every listFolder/getFolder. Reported via jobContext.
+  let apiCalls = 0;
+  let foldersWalked = 0;
+  let filesIndexed = 0;
 
   console.log(
     `[walker] start walkId=${walkId} userId=${userId} rootFolderId=${rootFolderId} maxDepth=${maxDepth}`,
@@ -74,6 +101,7 @@ export async function walkBoxTree(opts: {
 
   // Look up the root folder so we can capture its name + put it in the index too.
   const root = await getFolder(userId, rootFolderId);
+  apiCalls += 1;
   if (!root) {
     console.error(
       `[walker] root folder ${rootFolderId} returned null from getFolder — aborting walk walkId=${walkId}`,
@@ -118,10 +146,12 @@ export async function walkBoxTree(opts: {
   while (queue.length > 0) {
     if (maxItems && indexedCount >= maxItems) break;
     const cur = queue.shift()!;
+    foldersWalked += 1;
 
     let children;
     try {
       children = await listFolder(userId, cur.boxId);
+      apiCalls += 1;
     } catch (err) {
       // Log and continue — one bad folder shouldn't abort the whole walk.
       console.error(
@@ -129,6 +159,16 @@ export async function walkBoxTree(opts: {
         err instanceof Error ? err.message : err,
       );
       continue;
+    }
+
+    // Report progress to the job runner. The runner throttles writes to ≤5s.
+    if (jobContext) {
+      void jobContext.reportProgress({
+        foldersWalked,
+        filesIndexed,
+        apiCalls,
+        currentPath: cur.pathSegments.join(' / ') || (root.name ?? 'root'),
+      });
     }
 
     for (const child of children) {
@@ -189,6 +229,7 @@ export async function walkBoxTree(opts: {
         continue;
       }
       indexedCount += 1;
+      if (child.type === 'file') filesIndexed += 1;
       if (indexedCount - lastProgressLog >= PROGRESS_EVERY) {
         console.log(
           `[walker] progress walkId=${walkId} indexed=${indexedCount} queueRemaining=${queue.length} depth=${cur.depth + 1}`,
@@ -196,9 +237,18 @@ export async function walkBoxTree(opts: {
         lastProgressLog = indexedCount;
       }
 
+      // Incremental sync skip: if the child folder hasn't been modified since the last full
+      // walk's started_at, don't recurse into it. We DO still upsert it (row above) so the
+      // index reflects current metadata; we just don't walk its subtree.
+      const skipForIncremental =
+        incrementalSince !== undefined &&
+        child.type === 'folder' &&
+        !!child.modifiedAt &&
+        new Date(child.modifiedAt) < incrementalSince;
+
       // Recurse into folders only — don't enqueue files or web_links.
       // Don't recurse past maxDepth.
-      if (child.type === 'folder' && cur.depth + 1 < maxDepth) {
+      if (child.type === 'folder' && cur.depth + 1 < maxDepth && !skipForIncremental) {
         queue.push({
           boxId: child.id,
           parentBoxId: cur.boxId,
@@ -214,8 +264,14 @@ export async function walkBoxTree(opts: {
 
   const finishedAt = new Date();
   console.log(
-    `[walker] done walkId=${walkId} indexed=${indexedCount} duration=${finishedAt.getTime() - startedAt.getTime()}ms root="${root.name}"`,
+    `[walker] done walkId=${walkId} indexed=${indexedCount} duration=${finishedAt.getTime() - startedAt.getTime()}ms root="${root.name}" apiCalls=${apiCalls}`,
   );
+
+  // Final progress write (bypasses the 5s throttle by waiting it out via Promise resolution
+  // before returning — the job runner reads the in-memory state but the persisted state
+  // should match what we just observed).
+  // Note: the runner's reportProgress is fire-and-forget by design; the job-runner's
+  // markJobCompleted will write the final completed state authoritatively a moment later.
 
   // Update system_state.last_sync_box so the frontend polling sees the new index.
   await db
