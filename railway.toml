@@ -10,14 +10,29 @@ startCommand = "npm run db:migrate && npm run seed:users && npm start"
 healthcheckPath = "/api/health"
 restartPolicyType = "on_failure"
 
-# Daily sync at 4 AM Pacific (12:00 UTC) — wired in Phase 3 (RealNex) and Phase 2 (Box).
-# Phase 1 stub: sync:all is a no-op.
+# ---------------- Cron jobs ----------------
+# Phase 2 async-walker model: each cron creates a box_sync_jobs row with triggered_by='cron'
+# and awaits walker completion. The cron's exit code reflects success/failure so Railway's
+# cron logs surface real errors instead of silent ones.
+
+# Daily incremental Box sync — 4 AM Pacific (12:00 UTC).
+# Walks the tree using modified_at filtering against the last completed full walk's
+# started_at, so most subtrees are skipped. Catches additions + modifications, NOT deletions.
+# (Deletions are caught by the weekly full walk below.)
 [[deploy.cronJobs]]
 schedule = "0 12 * * *"
-command = "npm run sync:all"
+command = "npm run sync:box:incremental"
 
-# Weekly Postgres backup → Box, 5 AM Pacific Sunday (13:00 UTC).
-# COMMENTED OUT until Phase 2 wires Box upload. Don't fire crons into the void.
+# Weekly full Box sync — 5 AM Pacific Sunday (13:00 UTC).
+# Walks the entire tree, catching deletions that incremental sync misses.
+# Takes ~30 min on the 27k-item Tenants - ChapmanHoeck tree.
+[[deploy.cronJobs]]
+schedule = "0 13 * * 0"
+command = "npm run sync:box:full"
+
+# Weekly Postgres backup → Box, 5 AM Pacific Saturday (13:00 UTC).
+# COMMENTED OUT — P2.9 deferred (pg_dump streaming to Box backup folder).
+# Don't fire crons into the void.
 # [[deploy.cronJobs]]
-# schedule = "0 13 * * 0"
+# schedule = "0 13 * * 6"
 # command = "npm run backup:weekly"

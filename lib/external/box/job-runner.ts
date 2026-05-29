@@ -205,6 +205,24 @@ async function markJobFailedInternal(jobId: string, err: unknown): Promise<void>
 }
 
 /**
+ * For incremental sync: find the started_at of the most recent successfully-completed
+ * full walk. Subfolders whose box modified_at predates this are not recursed into.
+ *
+ * Returns null if no full has ever completed — caller should fall back to a full walk.
+ */
+export async function getLastFullWalkStartedAt(): Promise<Date | null> {
+  const result = await db.execute(sql`
+    SELECT started_at FROM box_sync_jobs
+    WHERE status = 'completed' AND sync_mode = 'full' AND deleted_at IS NULL
+    ORDER BY completed_at DESC NULLS LAST
+    LIMIT 1
+  `);
+  const row = result.rows[0] as unknown as { started_at: string } | undefined;
+  if (!row) return null;
+  return new Date(row.started_at);
+}
+
+/**
  * Run the walk for an existing queued job.
  *
  * IMPORTANT: this is meant to be invoked fire-and-forget from the POST handler:
@@ -221,13 +239,40 @@ export async function kickOffWalk(opts: {
   walkId: string;
   userId: string;
   rootFolderId: string;
+  /** Job's sync_mode — drives whether we pass incrementalSince. */
+  syncMode: 'full' | 'incremental';
 }): Promise<void> {
-  const { jobId, walkId, userId, rootFolderId } = opts;
+  const { jobId, walkId, userId, rootFolderId, syncMode } = opts;
   const ctx = buildContext(jobId, walkId);
 
   try {
     await markJobRunning(jobId);
-    console.log(`[job:${jobId}] running walkId=${walkId} userId=${userId}`);
+
+    // Resolve incrementalSince when caller asked for an incremental walk. If no full has
+    // completed yet, silently upgrade to a full (and log so it's visible in audit).
+    let incrementalSince: Date | undefined;
+    let effectiveMode: 'full' | 'incremental' = syncMode;
+    if (syncMode === 'incremental') {
+      const lastFullStartedAt = await getLastFullWalkStartedAt();
+      if (lastFullStartedAt) {
+        incrementalSince = lastFullStartedAt;
+      } else {
+        console.log(
+          `[job:${jobId}] incremental requested but no prior full walk found — upgrading to full`,
+        );
+        effectiveMode = 'full';
+        // Reflect the actual mode in the DB row.
+        await db
+          .update(boxSyncJobs)
+          .set({ syncMode: 'full', updatedBy: 'job_runner' })
+          .where(eq(boxSyncJobs.id, jobId));
+      }
+    }
+
+    console.log(
+      `[job:${jobId}] running walkId=${walkId} userId=${userId} mode=${effectiveMode}` +
+        (incrementalSince ? ` incrementalSince=${incrementalSince.toISOString()}` : ''),
+    );
 
     // Lazy import to avoid circular dep (walker.ts may import this file in the future).
     const { walkBoxTree } = await import('./walker');
@@ -235,6 +280,7 @@ export async function kickOffWalk(opts: {
       userId,
       rootFolderId,
       jobContext: ctx,
+      incrementalSince,
     });
     await markJobCompleted({ jobId, totalIndexed: result.indexedCount });
 

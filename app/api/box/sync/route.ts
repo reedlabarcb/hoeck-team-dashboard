@@ -131,6 +131,7 @@ export async function POST(request: NextRequest) {
     walkId: job.walkId,
     userId: session.user.id,
     rootFolderId,
+    syncMode,
   });
 
   console.log(
