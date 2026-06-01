@@ -36,7 +36,7 @@ Master Excel: append-only in v1.
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
 - [x] Phase 2: Box folder index — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after async-walker conversion (P2.15.1–P2.15.5). All 9 E2E steps pass. Final verified walkId `46058047-f6f1-4b1c-87ab-6f8f1e115725` (jobId `b269b3a0-7e03-4e87-8819-38196e7ca9ed`); 27,352 items indexed in 31 min 11 sec at 14.6 items/sec (faster than the original synchronous baseline). Box sync crons remain commented in `railway.toml` pending P2.15.6 re-enable commit. P2.9 (weekly pg_dump → Box) also deferred to a focused mini-phase.
 - [ ] Phase 3: RealNex sync + 4 workflows
-- [ ] Phase 4: Master Excel reads
+- [x] Phase 4: Master Excel reads — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after iterative P4.1 → P4.9 fixes. All four critical date columns (lease expiration, renewal window start/end, renewal deadline, termination deadline) return correct dates against the real `TT Rep Master Client List 5.20.26.xlsx` (Box file id 2019476118993). Defense-in-depth Y/N filter holds: column-name negative lookahead + column-level + row-level date type guards. Cross-check verified live on production for both Procopio DC (1901 L St) and Downtown (525 B St) → returns the fully-executed lease PDF inside the right `Lease Document(s)` subfolder.
 - [ ] Phase 5: Master Excel appends
 - [ ] Phase 6: Box folder rename
 - [ ] Phase 7: Notes/tags/locking
@@ -110,6 +110,48 @@ Master Excel: append-only in v1.
   - **Step 9** Fetch interception (Playwright `window.fetch` monkey-patch) confirms "Yes, run full walk" click would POST to `/api/box/sync?mode=full`. No actual second walk executed (synthetic 202 returned client-side). Server confirms no new job leaked.
   - Walker metrics: 27,352 indexed, 31 min 11 sec, 6,806 Box API calls, 14.6 items/sec — recorded in Performance Baselines.
 
+## Phase 4 — Master Excel reads (STABLE 2026-06-01)
+
+**Final commit hashes**
+- P4.1 Python bridge + tests
+- P4.2 TS safe wrapper + Box file fetcher
+- P4.3 `/api/master-excel/lookup` route
+- P4.4 `/master-excel` UI page
+- P4.5 health-check live probe upgrade
+- P4.6 expose `headers` + `rawHeaders` in lookup response (diagnostic)
+- P4.7 `0d63f86` — real-column HEADER_PATTERNS + (Y/N) negative lookaheads + column-level & row-level date type guards + production-mirror pytest fixtures + dated docstring header
+- P4.8 `609358a` — alias `renewal_deadline` ← `renewal_window_end` when no discrete deadline column (production file has none; OPTION DATES CLOSE doubles as deadline)
+- P4.9 `18a2f39` — cross-check 500 fix: swap `sql\`${col} = ANY(${arr})\`` (which spreads array params) for Drizzle's `inArray()` (binds single array)
+- Force-rebuild empty commits `17cc781`, `2f85d6a`, `aa19921` — Nixpacks layer cache wouldn't pick up `.py`/route changes without forcing fresh build
+
+**Real column-name mapping (TT Rep Master Client List 5.20.26.xlsx, Box file id 2019476118993, snapshot 2026-06-01)**
+| Col | Real header | Field |
+|----:|-------------|-------|
+| 0 | `CLIENT` | client |
+| 1 | `Address` | address |
+| 2 | `SQUARE FOOTAGE` | space_sf |
+| 3 | `LEASE EXPIRATION DATE` | lease_expiration |
+| 4 | `RENEWAL OPTION (Y/N)` | *intentionally unmatched (Y/N flag)* |
+| 5 | `OPTION DATES OPEN` | renewal_window_start |
+| 6 | `OPTION DATES CLOSE` | renewal_window_end **+ renewal_deadline (P4.8 alias)** |
+| 7 | `TERMINATION OPTION (Y/N)` | *intentionally unmatched (Y/N flag)* |
+| 8 | `TERMINATION DATE` | *unmatched in v1 (no field for "effective termination date" — defer to Phase 4.1 if Mike asks)* |
+| 9 | `TERMINATION NOTICE` | termination_deadline |
+| — | *(no Market column)* | market falls back to parens in CLIENT (e.g., `Procopio (DC)`) |
+
+**Live E2E results (production, 2026-06-01)**
+- `GET /api/master-excel/lookup?client=Procopio` → 5 rows (Scottsdale, DC, Downtown, Del Mar, Irvine) with correct dates. Procopio DC matches the docs/Box_Workflow.md spec example exactly: `renewalWindowEnd` = `renewalDeadline` = `2026-07-28T00:00:00` ("the option date closes 7/28/2026" per spec).
+- `terminationDeadline` returns `null` for rows where the TERMINATION NOTICE cell is blank (no Y/N leakage anywhere); returns real date only where the cell holds a real datetime (Procopio Del Mar: `2024-08-01T00:00:00`).
+- Fuzzy match `?client=proc` → same 5 Procopio rows. Case-insensitive contains works.
+- No-match `?client=ZZZ_NoSuchClient_XYZ` → 200, `matchCount: 0`, empty `rows: []`. Clean empty state, no error.
+- `GET /api/master-excel/cross-check?client=Procopio&address=1901%20L%20St` → `match: true`, file = `FE (91128543_12) TMG - 1901 L - Procopio Lease.docx.pdf` at path `Clients/Procopio - MT/Washington DC/2022 - Lease Acquisition - 1901 L St/Lease Document(s)/`. Score=2 ("executed" match).
+- `GET /api/master-excel/cross-check?client=Procopio&address=525%20B%20St` → `match: true`, file = `Fully Executed Lease Agmt-Procopio EH20026339.pdf` in the 525 B St deal folder. Score=2.
+
+**Deferred (Phase 4.1, none blocking)**
+- `TERMINATION DATE` (col 8) currently has no destination field. If Mike asks for "what date does termination actually take effect," add `termination_effective_date` to RowDict + pattern.
+- `PROSPECTS` sheet of the workbook is unread (only the primary `CLIENTS` sheet is parsed). Defer to Phase 4.1 if needed for prospect workflows.
+- Sheet name typo `Sottsdale, AZ` in Box left as-is per Phase 2 "faithfully mirror Box" rule.
+
 ## Known cleanups for Phase 2.1
 Small follow-ups identified during the async-walker conversion. None blocking.
 - **`box_sync_jobs.is_force_full` semantic ambiguity.** Currently set true whenever the effective walk is full, including the first-ever full when no prior completed walk exists (auto-upgrade path). Should mean strictly "user-initiated via the ?force=true / 'Run full walk →' modal." Audit logs need this distinction. Fix in P2.1.x: split into `is_force_full` (user-initiated) and `is_auto_upgraded` (because no prior full existed).
@@ -125,7 +167,7 @@ Small follow-ups identified during the async-walker conversion. None blocking.
    All three are acceptable for Phase 1 (empty DB, only Reed seeded, no real data) but MUST be rotated before any client data lands in Phase 7. Rotation procedure: regenerate, `railway variables --service ... --set`, force redeploy. For `SEED_REED_PASSWORD` to actually take effect, the existing users row must be deleted first (seed is `ON CONFLICT DO NOTHING`).
 - **Password rotation has no UI yet (Phase 7).** Today the only way to rotate Reed's password is: delete his row in Postgres via Railway DB shell, change `SEED_REED_PASSWORD`, redeploy. We'll add a proper "change password" flow in Phase 7.
 - **`secrets-bootstrap.txt` exists locally with Reed's initial password.** Path: `C:\dev\hoeck-team-dashboard\secrets-bootstrap.txt` (gitignored). DELETE this file after Reed has rotated his password.
-- **`python_bridge` health check is yellow on Railway.** Nix's `python311Packages.openpyxl` is installed but isn't on the bare `python` binary's `sys.path` — `python -c "import openpyxl"` fails. Acceptable for Phase 1. Fix in Phase 4 by switching to a wrapped python: `(python311.withPackages (ps: with ps; [ openpyxl ]))` in `nixpacks.toml`.
+- ~~**`python_bridge` health check is yellow on Railway.**~~ Fixed in P2.16 — `nixpacks.toml` now uses `python311.withPackages (ps: with ps; [ openpyxl ])` so `import openpyxl` works on the bare python.
 - **shadcn/ui not yet initialized.** Deferred to start of Phase 2 (will run `npx shadcn@latest init` then).
 - **Migrations run only on Railway deploy.** CBRE corp firewall blocks outbound TCP to `kodama.proxy.rlwy.net:51241` so `npm run db:migrate` can't run from the dev laptop. `railway.toml`'s `startCommand` is `npm run db:migrate && npm run seed:users && npm start` so it runs every deploy from inside Railway's private network. `/api/health` warns (yellow) instead of fails when Postgres is unreachable from a dev host. **Verified working 2026-05-21 — first deploy ran migrations + seed correctly.**
 - **Local dev DB option not yet set up.** If laptop-side UI iteration with live data becomes necessary (probably never in Phase 1, possibly in Phase 2+), spin up Docker Postgres locally and set `DATABASE_URL` to `postgres://localhost:5432/...`. Defer this decision until it actually hurts.
@@ -145,6 +187,7 @@ Recorded so future sessions can detect regressions. Numbers are from the actual 
 - **Incremental walk** — not yet measured on real data. Expected based on architecture: 1-3 min once steady-state, since most subtrees have `modified_at < incrementalSince` and get skipped.
 - **App boot (warm cache)** — `Ready in 66-155ms` after migrate + seed.
 - **Migration count** — 4 migrations applied (`users/activity_feed/system_state`, `user_box_tokens`, `box_folder_index`, `box_sync_jobs`).
+- **Master Excel lookup latency (production, 2026-06-01, P4.9 deploy)** — `GET /api/master-excel/lookup?client=Procopio`: cold path **1258 ms** (Box `getFile` metadata + `downloadFile` + Python subprocess spawn + openpyxl parse on 5.20.26 xlsx); warm path **355–435 ms** (file cached locally on disk under 5-min TTL + etag-revalidated, but Python subprocess still re-parses on every call — future optimization opportunity: serve from `cached.parsedAll` for repeated lookups on the same etag). Both ranges acceptable for UI use. Cross-check route adds ~50–100 ms (three index queries against `box_folder_index`).
 
 ## Key Decisions
 - Postgres (managed Railway), not SQLite — directly motivated by golf-bd SQLite-on-volume backup machinery (commit `156aa51`)
