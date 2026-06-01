@@ -201,20 +201,30 @@ def _parse_row(raw: list[Any], header_map: dict[str, int], source_row: int) -> R
     )
 
 
-def _load_rows(file_path: str, sheet_name: str | None) -> tuple[str, list[RowDict], dict[str, int], list[str]]:
-    """Load + parse all data rows. Returns (sheet_name, rows, header_map, warnings)."""
+def _load_rows(
+    file_path: str, sheet_name: str | None
+) -> tuple[str, list[RowDict], dict[str, int], list[str], list[str | None]]:
+    """Load + parse all data rows. Returns (sheet_name, rows, header_map, warnings, raw_headers).
+
+    `raw_headers` is the full header-row text (one entry per column, in column order) for
+    diagnostic use — surfaces ALL column names including ones the regex patterns didn't
+    match. The JSON response forwards this so we can write better HEADER_PATTERNS without
+    having to download the xlsx locally.
+    """
     warnings: list[str] = []
     wb = load_workbook(file_path, data_only=True, read_only=True)
     sheet = wb[sheet_name] if sheet_name else wb[wb.sheetnames[0]]
     all_rows = [list(r) for r in sheet.iter_rows(values_only=True)]
     if not all_rows:
-        return sheet.title, [], {}, ["Sheet is empty"]
+        return sheet.title, [], {}, ["Sheet is empty"], []
 
     try:
         header_row_idx, header_map = _detect_headers(all_rows)
     except ValueError as e:
         warnings.append(str(e))
-        return sheet.title, [], {}, warnings
+        return sheet.title, [], {}, warnings, []
+
+    raw_headers = [None if c is None else str(c).strip() for c in all_rows[header_row_idx - 1]]
 
     # Flag missing optional columns so the UI can surface a "this column wasn't found" hint.
     expected = {"client", "address", "market", "lease_expiration",
@@ -230,7 +240,7 @@ def _load_rows(file_path: str, sheet_name: str | None) -> tuple[str, list[RowDic
         if parsed is not None:
             rows.append(parsed)
 
-    return sheet.title, rows, header_map, warnings
+    return sheet.title, rows, header_map, warnings, raw_headers
 
 
 # ----------------- Actions -----------------
@@ -252,7 +262,7 @@ def action_smoke(file_path: str) -> dict[str, Any]:
 
 
 def action_all(file_path: str, sheet_name: str | None) -> dict[str, Any]:
-    sheet_title, rows, header_map, warnings = _load_rows(file_path, sheet_name)
+    sheet_title, rows, header_map, warnings, raw_headers = _load_rows(file_path, sheet_name)
     return {
         "status": "ok",
         "action": "all",
@@ -260,6 +270,7 @@ def action_all(file_path: str, sheet_name: str | None) -> dict[str, Any]:
         "row_count": len(rows),
         "rows": [asdict(r) for r in rows],
         "headers": header_map,
+        "raw_headers": raw_headers,
         "warnings": warnings,
     }
 
@@ -269,7 +280,7 @@ def action_lookup(file_path: str, sheet_name: str | None, client: str, market: s
         return {"status": "error", "action": "lookup",
                 "error": "--client is required for action=lookup"}
 
-    sheet_title, rows, header_map, warnings = _load_rows(file_path, sheet_name)
+    sheet_title, rows, header_map, warnings, raw_headers = _load_rows(file_path, sheet_name)
 
     matches: list[RowDict] = []
     for row in rows:
@@ -288,6 +299,7 @@ def action_lookup(file_path: str, sheet_name: str | None, client: str, market: s
         "multiple_matches": len(matches) > 1,
         "rows": [asdict(r) for r in matches],
         "headers": header_map,
+        "raw_headers": raw_headers,
         "warnings": warnings,
     }
 

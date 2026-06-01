@@ -45,6 +45,12 @@ export interface MasterExcelLookupResult {
    * match the column name; user sees a parser warning + `null` data.
    */
   headers?: Record<string, number>;
+  /**
+   * Full header-row text in column order (one entry per column, null for blank cells).
+   * Diagnostic — lets us see ALL column names including unmatched ones so HEADER_PATTERNS
+   * can be tuned to the real file without a local download.
+   */
+  rawHeaders?: (string | null)[];
 }
 
 export interface MasterExcelAllRowsResult {
@@ -53,6 +59,7 @@ export interface MasterExcelAllRowsResult {
   source: MasterExcelSource;
   warnings: string[];
   headers?: Record<string, number>;
+  rawHeaders?: (string | null)[];
 }
 
 export interface MasterExcelSmokeResult {
@@ -91,6 +98,7 @@ export interface PythonLookupResponse {
   multiple_matches?: boolean;
   rows?: PythonRowDict[];
   headers?: Record<string, number>;
+  raw_headers?: (string | null)[];
   warnings?: string[];
   error?: string;
 }
@@ -102,6 +110,7 @@ export interface PythonAllResponse {
   row_count?: number;
   rows?: PythonRowDict[];
   headers?: Record<string, number>;
+  raw_headers?: (string | null)[];
   warnings?: string[];
   error?: string;
 }
