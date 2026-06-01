@@ -38,6 +38,13 @@ export interface MasterExcelLookupResult {
   query: { client: string; market?: string };
   source: MasterExcelSource;
   warnings: string[];
+  /**
+   * Field-name → 0-indexed column position as detected by the Python header parser.
+   * Surfaces the parser's column-detection result so we (and the UI later) can show
+   * which fields the parser found in the actual file. Missing fields = parser couldn't
+   * match the column name; user sees a parser warning + `null` data.
+   */
+  headers?: Record<string, number>;
 }
 
 export interface MasterExcelAllRowsResult {
@@ -45,6 +52,7 @@ export interface MasterExcelAllRowsResult {
   rowCount: number;
   source: MasterExcelSource;
   warnings: string[];
+  headers?: Record<string, number>;
 }
 
 export interface MasterExcelSmokeResult {

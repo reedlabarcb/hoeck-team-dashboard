@@ -221,6 +221,7 @@ export async function getAllRows(userId: string): Promise<MasterExcelAllRowsResu
     rowCount: response.row_count ?? 0,
     source: ensured.source,
     warnings: response.warnings ?? [],
+    headers: response.headers,
   };
 
   setCachedParsedAll(ensured.source.boxFileId, result);
@@ -277,6 +278,7 @@ export async function getCriticalDatesForClient(
     query: { client, market },
     source: ensured.source,
     warnings: response.warnings ?? [],
+    headers: response.headers,
   };
 }
 
