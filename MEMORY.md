@@ -34,7 +34,7 @@ Master Excel: append-only in v1.
 
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
-- [~] Phase 2: Box folder index — initial implementation stable; **async-walker conversion IN PROGRESS** (started 2026-05-27 after 181 GB tree exceeded sync 5-min timeout). 5-commit sequence: schema → worker → UI polling → incremental + cron → breadcrumb fix. P2.9 (weekly pg_dump cron) still deferred.
+- [x] Phase 2: Box folder index — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after async-walker conversion (P2.15.1–P2.15.5). All 9 E2E steps pass. Final verified walkId `46058047-f6f1-4b1c-87ab-6f8f1e115725` (jobId `b269b3a0-7e03-4e87-8819-38196e7ca9ed`); 27,352 items indexed in 31 min 11 sec at 14.6 items/sec (faster than the original synchronous baseline). Box sync crons remain commented in `railway.toml` pending P2.15.6 re-enable commit. P2.9 (weekly pg_dump → Box) also deferred to a focused mini-phase.
 - [ ] Phase 3: RealNex sync + 4 workflows
 - [ ] Phase 4: Master Excel reads
 - [ ] Phase 5: Master Excel appends
@@ -98,6 +98,23 @@ Master Excel: append-only in v1.
 - 2026-06-01: **Breadcrumb probe — bug rediagnosed.** Playwright session against the deployed app confirms the breadcrumb component itself is bug-free at all depths (1 entry at root, 2 entries at depth 2, etc.). The "duplication" in Reed's earlier screenshot was actually: at `/files` root URL with no `?folder` param, `/api/box/folders` returned the root row itself rather than its children — so the breadcrumb said "Tenants - ChapmanHoeck" AND the table's single row also said "Tenants - ChapmanHoeck". Two appearances within the same view = looked like a dup.
 - 2026-06-01: **Commit 5 (P2.15.5) — folders route fix + cron disable.** `/api/box/folders` now, when called with no `parent` param, pre-queries for the root row and filters children to its box_id. Empty index still returns []. Result: `/files` root URL now shows the actual children of `Tenants - ChapmanHoeck` (Clients, etc.) instead of the root row itself. Both Box sync crons in `railway.toml` re-commented with explicit re-enable conditions and a placeholder for P2.15.6.
 - 2026-06-01: **Phase 2 async-walker conversion code-complete.** P2.15.1 → P2.15.5 all deployed cleanly. Awaits Reed's end-to-end production verification (full walk via UI button, navigate-away/return, deep search) before declaring Phase 2 officially stable. After verification, P2.15.6 re-enables crons.
+- 2026-06-01: **End-to-end production verification — ALL 9 STEPS PASS.** Run against deployed commit `6018bca`. Summary:
+  - **Step 1** `/files` root URL shows root's children (24 rows: 19 folders + 5 files) — root-row-as-only-table-entry bug fixed.
+  - **Step 2** Refresh button POST `/api/box/sync` returns 202 with new jobId; button flips to `Syncing… mm:ss` with live counter; server status='running'.
+  - **Step 3** Navigate Home → return to `/files` mid-sync. localStorage `hoeck.activeBoxSyncJobId` preserved across navigation; counter resumes; server progress continued advancing.
+  - **Step 4** On terminal state, completion banner reads `"Sync complete · 27,480 items now indexed · Full walk · 31 min ×"`. localStorage cleared automatically.
+  - **Step 5** Search "procopio" returns 94 matches including 6-deep PDFs (e.g. `2023 0517 Procopio, Cory, Hargreaves & Savitch LLP Executed Lease.pdf`).
+  - **Step 6** Deep-link `/files?folder=346719171935` renders correct 6-entry breadcrumb (`Tenants - ChapmanHoeck / Clients / Procopio - MT / Sottsdale, AZ / 2023 - Lease Acquisition - 4800 N Scottsdale / Lease Document(s)`). Click "Clients" breadcrumb segment correctly truncates URL+chain to depth 2.
+  - **Step 7** "Run full walk →" link opens confirmation modal. Title `"Run a full walk?"`. Cancel button has `autoFocus`. Both buttons present.
+  - **Step 8** `Escape` key dismisses modal; no server-side job started.
+  - **Step 9** Fetch interception (Playwright `window.fetch` monkey-patch) confirms "Yes, run full walk" click would POST to `/api/box/sync?mode=full`. No actual second walk executed (synthetic 202 returned client-side). Server confirms no new job leaked.
+  - Walker metrics: 27,352 indexed, 31 min 11 sec, 6,806 Box API calls, 14.6 items/sec — recorded in Performance Baselines.
+
+## Known cleanups for Phase 2.1
+Small follow-ups identified during the async-walker conversion. None blocking.
+- **`box_sync_jobs.is_force_full` semantic ambiguity.** Currently set true whenever the effective walk is full, including the first-ever full when no prior completed walk exists (auto-upgrade path). Should mean strictly "user-initiated via the ?force=true / 'Run full walk →' modal." Audit logs need this distinction. Fix in P2.1.x: split into `is_force_full` (user-initiated) and `is_auto_upgraded` (because no prior full existed).
+- **P2.15.6 — re-enable Box sync crons in `railway.toml`.** Both Box sync crons (daily incremental + weekly full) remain commented out pending this commit. Re-enable conditions are spelled out in the `railway.toml` comment block. Verification gates are now met by the 2026-06-01 E2E run; the commit is mechanical.
+- **P2.9 — weekly pg_dump → Box backup cron.** Closes the Hobby-tier-no-Postgres-backups gap. Stub at `scripts/backup-db.ts` (pg_dump → local file) with TODO for Box upload. To be implemented as a focused mini-phase.
 
 ## Known Issues / Next Up
 - **Backup story is incomplete.** Railway Hobby plan has zero Postgres backups. Phase 1 ships `/api/export/all` (manual ZIP) as the only safety net. `scripts/backup-db.ts` is stubbed (pg_dump → local) with `TODO: upload to Box` — full weekly cron to be wired end of Phase 2 once Box OAuth is live. Cron entry in `railway.toml` is commented out until then.
@@ -122,9 +139,10 @@ Master Excel: append-only in v1.
 ## Performance Baselines
 Recorded so future sessions can detect regressions. Numbers are from the actual production deployment, not estimates.
 
-- **Full Box walk (synchronous, pre-async conversion)** — 27,234 items indexed in 34 min 22 sec (2,062,382 ms) against the real `Tenants - ChapmanHoeck` tree (~181 GB, depth 6). API call count not yet captured (added to `box_sync_jobs.api_calls_made` in P2.15.x). Throughput ≈ 13 items/sec. The walker code itself is correct; the only thing fighting it was the frontend's 5-min HTTP timeout — which is exactly why we converted to the async-job pattern.
-- **Postgres DB size after full walk** — ~23.7 MB (from 8 MB baseline pre-walk; ~16 MB of folder index data + jsonb path_segments).
-- **Incremental walk** — TBD. Expected: 1-3 minutes once steady-state, since most subtrees have `modified_at < incrementalSince` and get skipped.
+- **Full Box walk (synchronous, pre-async conversion)** — 27,234 items indexed in 34 min 22 sec (2,062,382 ms) against the real `Tenants - ChapmanHoeck` tree (~181 GB, depth 6). API call count not captured for this run. Throughput ≈ 13.2 items/sec. The walker code itself was correct; the only thing fighting it was the frontend's 5-min HTTP timeout — which is why we converted to async.
+- **Full Box walk (async pattern, P2.15.x)** — 27,352 items in 31 min 11 sec (1,870,807 ms), 6,806 Box API calls, throughput **14.6 items/sec**. Triggered by user via `/files` Refresh button → POST `/api/box/sync` → fire-and-forget walker. UI polled `/api/box/sync/status` every 5s; user navigated away mid-walk and back without disruption (localStorage handoff). On completion, the `box_sync_jobs` row's `total_folders_in_index` reflected the full table count (27,480 — slightly higher than walked count due to a few residual rows from earlier walks that the current walker hadn't yet overwritten). Verified jobId `b269b3a0-7e03-4e87-8819-38196e7ca9ed` / walkId `46058047-f6f1-4b1c-87ab-6f8f1e115725` on 2026-06-01.
+- **Postgres DB size after full walk** — ~23.7 MB at first full walk. Negligible additional growth on subsequent walks (UPSERT-only schema).
+- **Incremental walk** — not yet measured on real data. Expected based on architecture: 1-3 min once steady-state, since most subtrees have `modified_at < incrementalSince` and get skipped.
 - **App boot (warm cache)** — `Ready in 66-155ms` after migrate + seed.
 - **Migration count** — 4 migrations applied (`users/activity_feed/system_state`, `user_box_tokens`, `box_folder_index`, `box_sync_jobs`).
 

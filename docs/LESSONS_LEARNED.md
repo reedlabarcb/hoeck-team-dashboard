@@ -105,3 +105,39 @@ The following came out of mining the prior repos and are worth holding onto even
     **Lesson:** always `git grep` for `new Pool` outside `lib/db/` and `scripts/`
     before merging anything that touches the DB. The pre-commit hook now enforces
     this automatically — see `.husky/pre-commit`.
+
+12. **Phase 2 — log-grep monitors are not authoritative; pair every watcher with an endpoint poll.**
+    During the async-walker E2E (2026-06-01), I armed a background Monitor to watch for
+    `[walker] done walkId=b269b3a0` against the production Railway logs. The watcher
+    would have run for hours and never fired because `b269b3a0` is the **jobId**, not the
+    **walkId** — the actual walkId was `46058047-…`. The two are separate UUID columns
+    on `box_sync_jobs` (`id` vs `walk_id`), and the walker logs `walkId` exclusively. The
+    monitor regex didn't match anything the walker emitted, so the watcher was silent and
+    falsely appeared "still running" while the walker had in fact completed.
+
+    Worse: even if the IDs had matched, log-grep is fragile to format changes (someone
+    renames the log prefix from `[walker] done` to `[walker] complete`, or Railway log
+    retention rotates the line out before the polling window reaches it, or the message
+    is buried under unrelated noise). Authoritative state lives in Postgres, not stdout.
+
+    **Fix going forward:** any log-grep watcher MUST be paired with a periodic poll
+    against the authoritative endpoint (`/api/box/sync/status` in this case, or the
+    underlying DB query directly). The endpoint poll is the source of truth; the log
+    grep is sugar for surfacing the moment of transition.
+
+    **Pattern template:**
+    ```bash
+    # Inside a Monitor loop:
+    # 1. Hit the authoritative endpoint
+    status=$(curl -sS -b "$COOKIE" https://example/api/job/$JOB_ID/status | jq -r .status)
+    if [ "$status" = "completed" ] || [ "$status" = "failed" ]; then exit 0; fi
+    # 2. Optionally also emit any log lines that crossed a known interesting threshold
+    ```
+
+    The poll catches the transition even if the log line is missed (wrong regex, rotated
+    out, format changed). The log line, when caught, gives faster latency on the event.
+    Both layers together = correct + fast. Either layer alone = unreliable.
+
+    **Lesson:** never trust a single observability channel for terminal-state detection.
+    Always layer authoritative-source poll + opportunistic log-grep. When the two
+    disagree, the authoritative source wins.
