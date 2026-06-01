@@ -162,7 +162,65 @@ export async function checkMasterExcelFile(): Promise<CheckResult> {
       detail: 'BOX_MASTER_EXCEL_FILE_ID not set — wired in Phase 4',
     };
   }
-  return { name: 'master_excel', status: 'warn', detail: 'live check pending Phase 4' };
+
+  // Live probe: pick the most-recently-refreshed user_box_tokens row and call
+  // runSmoke as that user. Same pattern the sync cron uses for the walker —
+  // we don't bake in a "service identity," we use a real user's Box token.
+  // If nobody has connected Box yet, fall back to a warn-not-an-error.
+  let userId: string;
+  try {
+    const { and, desc, isNull } = await import('drizzle-orm');
+    const { userBoxTokens } = await import('./db/schema');
+    const candidates = await db
+      .select({ userId: userBoxTokens.userId })
+      .from(userBoxTokens)
+      .where(and(isNull(userBoxTokens.deletedAt)))
+      .orderBy(desc(userBoxTokens.updatedAt))
+      .limit(1);
+    if (candidates.length === 0) {
+      return {
+        name: 'master_excel',
+        status: 'warn',
+        detail: 'No Box-connected user — live probe skipped. Click Connect Box on /files to enable.',
+      };
+    }
+    userId = candidates[0].userId;
+  } catch (err) {
+    return {
+      name: 'master_excel',
+      status: 'warn',
+      detail: `Couldn't query user_box_tokens for live probe: ${err instanceof Error ? err.message : 'unknown'}`,
+    };
+  }
+
+  try {
+    const { runSmoke } = await import('./external/master-excel/safe');
+    const result = await runSmoke(userId);
+    return {
+      name: 'master_excel',
+      status: 'ok',
+      detail: 'reachable — file opens cleanly',
+      metadata: {
+        box_file_id: result.source.boxFileId,
+        file_name: result.source.fileName,
+        etag: result.source.etag,
+        box_modified_at: result.source.boxModifiedAt,
+        sheet_count: result.sheetCount,
+        sheet_names: result.sheetNames,
+        primary_sheet: result.primarySheet,
+        primary_row_count: result.primaryRowCount,
+        cache_hit: result.source.cacheHit,
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      name: 'master_excel',
+      status: 'warn',
+      detail: `Live probe failed: ${msg.slice(0, 200)}`,
+      metadata: { box_file_id: process.env.BOX_MASTER_EXCEL_FILE_ID, error: msg.slice(0, 500) },
+    };
+  }
 }
 
 export async function checkAnthropic(): Promise<CheckResult> {
