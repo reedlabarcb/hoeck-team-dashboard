@@ -9,7 +9,7 @@ const NAV = [
   { label: 'Contacts', href: '/contacts', soon: true },
   { label: 'Activities', href: '/activities', soon: true },
   { label: 'Files', href: '/files' },
-  { label: 'Master Excel', href: '/master-excel', soon: true },
+  { label: 'Master Excel', href: '/master-excel' },
   { label: 'Activity Feed', href: '/activity-feed', soon: true },
   { label: 'System Status', href: '/health' },
 ];
