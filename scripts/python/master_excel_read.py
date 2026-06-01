@@ -52,34 +52,94 @@ except ImportError:
     sys.exit(1)
 
 
+# -----------------------------------------------------------------------------
+# Real Master Excel column names as of 2026-06-01, from production file
+# "TT Rep Master Client List 5.20.26.xlsx" (Box file id 2019476118993):
+#
+#   col 0:  CLIENT                          → client
+#   col 1:  Address                         → address
+#   col 2:  SQUARE FOOTAGE                  → space_sf
+#   col 3:  LEASE EXPIRATION DATE           → lease_expiration
+#   col 4:  RENEWAL OPTION (Y/N)            → (unmatched by design; Y/N flag, not a date)
+#   col 5:  OPTION DATES OPEN               → renewal_window_start
+#   col 6:  OPTION DATES CLOSE              → renewal_window_end + renewal_deadline alias
+#   col 7:  TERMINATION OPTION (Y/N)        → (unmatched by design; Y/N flag, not a date)
+#   col 8:  TERMINATION DATE                → termination_date (effective date of termination)
+#   col 9:  TERMINATION NOTICE              → termination_deadline (date notice must be given by)
+#
+# If these change in the future, update HEADER_PATTERNS below and verify with a
+# fresh lookup against production. Defense in depth: even if the regex
+# accidentally matches a wrong column (e.g., the Y/N flag columns), the
+# date-type guard in _load_rows REJECTS columns whose data isn't datetime,
+# so the worst case is "field shows null" — never "wrong data."
+# -----------------------------------------------------------------------------
+
 # Header-detection patterns. We match the FIRST row whose cells contain text that
 # looks like headers; for each column, we check the patterns in order and assign
 # the first matching field. Case-insensitive substring matches.
-# Tuple = (field_name, [pattern_groups]) — all groups in a single pattern must match.
+# Tuple = (field_name, [pattern_groups]) — all patterns in a tuple must match the header.
+#
+# Pattern design notes:
+#   - We deliberately exclude "(Y/N)" / "(Y / N)" / "Y/N" via negative lookahead on
+#     date fields, because the real file has columns like "RENEWAL OPTION (Y/N)"
+#     that look superficially like renewal columns but contain Yes/No, not dates.
+#   - "OPTION DATES OPEN/CLOSE" in production don't contain the word "renew" but
+#     are renewal window start/end. So the pattern matches "option.*date" or
+#     just "option" without requiring "renew".
 HEADER_PATTERNS: list[tuple[str, list[re.Pattern[str]]]] = [
-    ("client",                  [re.compile(r"client", re.I)]),
+    ("client",                  [re.compile(r"^client$", re.I)]),
     ("address",                 [re.compile(r"address|premise|location", re.I)]),
     ("market",                  [re.compile(r"\bmarket\b|\boffice\b|\bcity\b", re.I)]),
-    ("space_sf",                [re.compile(r"\bsf\b|square ?f(ee)?t|space size", re.I)]),
-    ("lease_expiration",        [re.compile(r"(lease|expir).*expir|expir.*(lease|date)|expir", re.I)]),
+    ("space_sf",                [re.compile(r"\bsf\b|square ?f(ee|oo)t|space ?size|footage", re.I)]),
+    ("lease_expiration",        [
+        re.compile(r"lease.*expir|expir.*date|^expiration$|^lease ?expir", re.I),
+        # Must not be a Y/N column.
+        re.compile(r"^(?!.*\(?\s*y\s*/\s*n\s*\)?).*", re.I),
+    ]),
     ("renewal_window_start",    [
-        re.compile(r"renew", re.I),
-        re.compile(r"(window|option).*(start|begin|open)", re.I),
+        # Matches "OPTION DATES OPEN", "Renewal Option Window Start", etc.
+        # Note: no requirement to contain "renew" — production file uses bare "OPTION".
+        re.compile(r"((renew|option|window).*(open|start|begin))|(open.*(option|date))", re.I),
+        # Must not be a termination column.
+        re.compile(r"^(?!.*termin).*", re.I),
+        # Must not be a Y/N column.
+        re.compile(r"^(?!.*\(?\s*y\s*/\s*n\s*\)?).*", re.I),
     ]),
     ("renewal_window_end",      [
-        re.compile(r"renew", re.I),
-        re.compile(r"(window|option).*(end|close|stop)", re.I),
+        # Matches "OPTION DATES CLOSE", "Renewal Window End", etc.
+        re.compile(r"((renew|option|window).*(close|end|stop))|(close.*(option|date))", re.I),
+        # Must not be a termination column.
+        re.compile(r"^(?!.*termin).*", re.I),
+        # Must not be a Y/N column.
+        re.compile(r"^(?!.*\(?\s*y\s*/\s*n\s*\)?).*", re.I),
     ]),
     ("renewal_deadline",        [
-        re.compile(r"renew", re.I),
-        re.compile(r"deadline|notice", re.I),
+        re.compile(r"renew.*(deadline|notice)|notice.*renew", re.I),
+        # Must not be a termination column.
+        re.compile(r"^(?!.*termin).*", re.I),
+        # Must not be a Y/N column.
+        re.compile(r"^(?!.*\(?\s*y\s*/\s*n\s*\)?).*", re.I),
     ]),
     ("termination_deadline",    [
         re.compile(r"termin", re.I),
-        re.compile(r"deadline|option|notice|close", re.I),
+        # Notice / deadline (NOT "option" because "TERMINATION OPTION (Y/N)" is a flag).
+        re.compile(r"notice|deadline", re.I),
+        # Must not be a Y/N column.
+        re.compile(r"^(?!.*\(?\s*y\s*/\s*n\s*\)?).*", re.I),
     ]),
     ("notes",                   [re.compile(r"\bnotes?\b|comment", re.I)]),
 ]
+
+# Fields that MUST contain date values. The post-detection type guard in _load_rows
+# rejects any column whose data isn't datetime — defends against the regex matching
+# a non-date column despite the negative lookaheads above.
+DATE_FIELDS: frozenset[str] = frozenset({
+    "lease_expiration",
+    "renewal_window_start",
+    "renewal_window_end",
+    "renewal_deadline",
+    "termination_deadline",
+})
 
 
 @dataclass
@@ -107,6 +167,21 @@ def _cell_to_str(v: Any) -> str | None:
         return v.isoformat()
     s = str(v).strip()
     return s if s else None
+
+
+def _cell_to_date_str(v: Any) -> str | None:
+    """ISO-8601 string ONLY if v is a datetime/date instance. Otherwise None.
+
+    This is the row-level type guard for DATE_FIELDS. If the matched column
+    contains "Yes"/"No"/"TBD"/blank/etc., this returns None instead of leaking
+    the wrong-type value through. Defense in depth alongside the column-level
+    type guard in _load_rows.
+    """
+    if v is None:
+        return None
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()
+    return None  # Reject non-date values — never return strings, numbers, etc.
 
 
 def _cell_to_float(v: Any) -> float | None:
@@ -191,11 +266,14 @@ def _parse_row(raw: list[Any], header_map: dict[str, int], source_row: int) -> R
         market=market,
         address=_cell_to_str(cell("address")),
         space_sf=_cell_to_float(cell("space_sf")),
-        lease_expiration=_cell_to_str(cell("lease_expiration")),
-        renewal_window_start=_cell_to_str(cell("renewal_window_start")),
-        renewal_window_end=_cell_to_str(cell("renewal_window_end")),
-        renewal_deadline=_cell_to_str(cell("renewal_deadline")),
-        termination_deadline=_cell_to_str(cell("termination_deadline")),
+        # Date fields: row-level type guard — return None for any non-datetime cell.
+        # If "Yes"/"No" sneaks through column detection, this prevents the wrong value
+        # from leaking out.
+        lease_expiration=_cell_to_date_str(cell("lease_expiration")),
+        renewal_window_start=_cell_to_date_str(cell("renewal_window_start")),
+        renewal_window_end=_cell_to_date_str(cell("renewal_window_end")),
+        renewal_deadline=_cell_to_date_str(cell("renewal_deadline")),
+        termination_deadline=_cell_to_date_str(cell("termination_deadline")),
         notes=_cell_to_str(cell("notes")),
         source_row=source_row,
     )
@@ -225,6 +303,31 @@ def _load_rows(
         return sheet.title, [], {}, warnings, []
 
     raw_headers = [None if c is None else str(c).strip() for c in all_rows[header_row_idx - 1]]
+
+    # ----- Column-level type guard for DATE_FIELDS -----
+    # Even with negative lookaheads in HEADER_PATTERNS, a column name we don't
+    # anticipate could match (e.g., new "X (Y / N)" variant). After detection,
+    # scan ALL data cells in each date-field column; if NONE are datetime AND
+    # the column has non-null values, the regex matched the wrong column —
+    # reject it (remove from header_map) and emit a warning.
+    data_rows = all_rows[header_row_idx:]
+    rejected: list[tuple[str, int, str | None]] = []
+    for field_name in list(header_map.keys()):
+        if field_name not in DATE_FIELDS:
+            continue
+        col_idx = header_map[field_name]
+        col_values = [r[col_idx] for r in data_rows if col_idx < len(r)]
+        non_null = [v for v in col_values if v is not None and v != ""]
+        has_date = any(isinstance(v, (datetime, date)) for v in non_null)
+        if non_null and not has_date:
+            header_name = raw_headers[col_idx] if col_idx < len(raw_headers) else "?"
+            rejected.append((field_name, col_idx, header_name))
+            del header_map[field_name]
+    if rejected:
+        for f, idx, h in rejected:
+            warnings.append(
+                f"Column \"{h}\" (col {idx}) matched {f} by name but contains zero date values across {len([r for r in data_rows if idx < len(r) and r[idx] not in (None, '')])} non-null rows. Rejected — field will be null."
+            )
 
     # Flag missing optional columns so the UI can surface a "this column wasn't found" hint.
     expected = {"client", "address", "market", "lease_expiration",

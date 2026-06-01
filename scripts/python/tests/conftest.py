@@ -183,3 +183,103 @@ def fixture_no_header(tmp_path: Path) -> Path:
     out = tmp_path / "no_header.xlsx"
     wb.save(out)
     return out
+
+
+# ----- Production-mirror fixtures (added in P4.7 after probing the real file) -----
+
+# These mirror the EXACT column layout of "TT Rep Master Client List 5.20.26.xlsx"
+# as it existed in Box on 2026-06-01. Catches regressions if the parser breaks for
+# the real column names.
+REAL_WORLD_HEADER_LABELS = [
+    "CLIENT",                       # 0 → client
+    "Address",                      # 1 → address
+    "SQUARE FOOTAGE",               # 2 → space_sf
+    "LEASE EXPIRATION DATE",        # 3 → lease_expiration
+    "RENEWAL OPTION (Y/N)",         # 4 → (unmatched — Y/N flag)
+    "OPTION DATES OPEN",            # 5 → renewal_window_start
+    "OPTION DATES CLOSE",           # 6 → renewal_window_end
+    "TERMINATION OPTION (Y/N)",     # 7 → (unmatched — Y/N flag)
+    "TERMINATION DATE",             # 8 → unmatched in v1 (no field for "effective termination date")
+    "TERMINATION NOTICE",           # 9 → termination_deadline (date by which notice must be given)
+]
+
+
+@pytest.fixture
+def fixture_real_world(tmp_path: Path) -> Path:
+    """
+    Mirror of the actual production column layout. Used to verify P4.7's:
+      - HEADER_PATTERNS match all expected columns
+      - Y/N flag columns are NOT captured as date fields
+      - column-level type guard rejects any accidental Y/N match
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CLIENTS"
+    _add_row(ws, REAL_WORLD_HEADER_LABELS, 1)
+    # Procopio (Scottsdale)
+    _add_row(ws, [
+        "Procopio (Scottsdale)",     # 0 CLIENT
+        "4800 N Scottsdale Rd",      # 1 Address
+        6500,                         # 2 SQUARE FOOTAGE
+        datetime(2026, 9, 30),        # 3 LEASE EXPIRATION DATE
+        "Yes",                        # 4 RENEWAL OPTION (Y/N)
+        datetime(2025, 9, 30),        # 5 OPTION DATES OPEN
+        datetime(2026, 3, 30),        # 6 OPTION DATES CLOSE
+        "No",                         # 7 TERMINATION OPTION (Y/N)
+        None,                         # 8 TERMINATION DATE
+        None,                         # 9 TERMINATION NOTICE
+    ], 2)
+    # Procopio (DC) — with renewal + termination clauses
+    _add_row(ws, [
+        "Procopio (DC)",
+        "1901 L St, Washington DC",
+        8000,
+        datetime(2027, 2, 28),
+        "Yes",
+        datetime(2026, 6, 1),
+        datetime(2026, 8, 28),
+        "Yes",
+        datetime(2026, 12, 31),
+        datetime(2026, 6, 30),
+    ], 3)
+    # ACME — minimal, no options at all
+    _add_row(ws, [
+        "ACME",
+        None,
+        None,
+        datetime(2026, 12, 31),
+        "No",
+        None,
+        None,
+        "No",
+        None,
+        None,
+    ], 4)
+    out = tmp_path / "real_world.xlsx"
+    wb.save(out)
+    return out
+
+
+@pytest.fixture
+def fixture_yn_only_termination(tmp_path: Path) -> Path:
+    """
+    Edge case: file has ONLY "TERMINATION OPTION (Y/N)" (no TERMINATION NOTICE column).
+    The (Y/N) guard in HEADER_PATTERNS should refuse to match this as
+    termination_deadline; backup defense — the column-level type guard would also
+    reject it (no date values).
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CLIENTS"
+    _add_row(ws, [
+        "CLIENT", "Address", "LEASE EXPIRATION DATE", "TERMINATION OPTION (Y/N)",
+    ], 1)
+    _add_row(ws, [
+        "ACME", "100 Main St", datetime(2026, 12, 31), "Yes",
+    ], 2)
+    _add_row(ws, [
+        "Beta Corp", "200 Oak St", datetime(2027, 6, 30), "No",
+    ], 3)
+    out = tmp_path / "yn_only_termination.xlsx"
+    wb.save(out)
+    return out
