@@ -14,21 +14,29 @@ restartPolicyType = "on_failure"
 # Phase 2 async-walker model: each cron creates a box_sync_jobs row with triggered_by='cron'
 # and awaits walker completion. The cron's exit code reflects success/failure so Railway's
 # cron logs surface real errors instead of silent ones.
-
+#
+# >>> ALL CRONS COMMENTED OUT until one manual full walk has been verified end-to-end via
+# >>> the /files UI Refresh button. See P2.15.6 (separate commit) to re-enable.
+#
+# Re-enable conditions (must ALL be true):
+#   1. A manual full walk triggered via the UI button (Run full walk → confirm modal)
+#      completes successfully with status='completed' in box_sync_jobs.
+#   2. No orphan_recovery messages appear on the next two app boots after that walk
+#      (i.e., the worker survived the deploy gracefully).
+#   3. No Box token-refresh failures during the walk (clean activity_feed entries).
+#   4. Deep-folder search via /files returns a Procopio file 5+ folders deep.
+#   5. Re-enable as a separate commit titled "P2.15.6: enable Box sync crons" with the
+#      successful walkId referenced in the commit body.
+#
 # Daily incremental Box sync — 4 AM Pacific (12:00 UTC).
-# Walks the tree using modified_at filtering against the last completed full walk's
-# started_at, so most subtrees are skipped. Catches additions + modifications, NOT deletions.
-# (Deletions are caught by the weekly full walk below.)
-[[deploy.cronJobs]]
-schedule = "0 12 * * *"
-command = "npm run sync:box:incremental"
-
+# [[deploy.cronJobs]]
+# schedule = "0 12 * * *"
+# command = "npm run sync:box:incremental"
+#
 # Weekly full Box sync — 5 AM Pacific Sunday (13:00 UTC).
-# Walks the entire tree, catching deletions that incremental sync misses.
-# Takes ~30 min on the 27k-item Tenants - ChapmanHoeck tree.
-[[deploy.cronJobs]]
-schedule = "0 13 * * 0"
-command = "npm run sync:box:full"
+# [[deploy.cronJobs]]
+# schedule = "0 13 * * 0"
+# command = "npm run sync:box:full"
 
 # Weekly Postgres backup → Box, 5 AM Pacific Saturday (13:00 UTC).
 # COMMENTED OUT — P2.9 deferred (pg_dump streaming to Box backup folder).
