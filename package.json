@@ -22,7 +22,7 @@
     "health": "tsx scripts/health-check.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:python": "echo 'test:python — implemented in Phase 4' && exit 0"
+    "test:python": "python -m pytest scripts/python/tests/ -v"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.11",
