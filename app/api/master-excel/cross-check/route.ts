@@ -25,7 +25,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { and, desc, eq, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { boxFolderIndex } from '@/lib/db/schema';
 import { getSession } from '@/lib/auth/session';
@@ -115,7 +115,7 @@ export async function GET(request: NextRequest) {
         isNull(boxFolderIndex.deletedAt),
         eq(boxFolderIndex.boxType, 'folder'),
         ilike(boxFolderIndex.name, '%lease document%'),
-        sql`${boxFolderIndex.parentBoxId} = ANY(${dealBoxIds})`,
+        inArray(boxFolderIndex.parentBoxId, dealBoxIds),
       ),
     );
 
@@ -151,7 +151,7 @@ export async function GET(request: NextRequest) {
       and(
         isNull(boxFolderIndex.deletedAt),
         eq(boxFolderIndex.boxType, 'file'),
-        sql`${boxFolderIndex.parentBoxId} = ANY(${leaseDocBoxIds})`,
+        inArray(boxFolderIndex.parentBoxId, leaseDocBoxIds),
         isNotNull(boxFolderIndex.boxModifiedAt),
       ),
     )
