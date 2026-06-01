@@ -62,7 +62,7 @@ except ImportError:
 #   col 3:  LEASE EXPIRATION DATE           → lease_expiration
 #   col 4:  RENEWAL OPTION (Y/N)            → (unmatched by design; Y/N flag, not a date)
 #   col 5:  OPTION DATES OPEN               → renewal_window_start
-#   col 6:  OPTION DATES CLOSE              → renewal_window_end + renewal_deadline alias
+#   col 6:  OPTION DATES CLOSE              → renewal_window_end + renewal_deadline (aliased; see P4.8 in _load_rows)
 #   col 7:  TERMINATION OPTION (Y/N)        → (unmatched by design; Y/N flag, not a date)
 #   col 8:  TERMINATION DATE                → termination_date (effective date of termination)
 #   col 9:  TERMINATION NOTICE              → termination_deadline (date notice must be given by)
@@ -328,6 +328,19 @@ def _load_rows(
             warnings.append(
                 f"Column \"{h}\" (col {idx}) matched {f} by name but contains zero date values across {len([r for r in data_rows if idx < len(r) and r[idx] not in (None, '')])} non-null rows. Rejected — field will be null."
             )
+
+    # ----- Alias: renewal_deadline ← renewal_window_end -----
+    # Production "TT Rep Master Client List" has no separate "Renewal Deadline"
+    # column — the OPTION DATES CLOSE column doubles as both window-end and
+    # deadline (per docs/Box_Workflow.md § 5 example: "the option date closes
+    # 7/28/2026" IS the deadline). If a sheet has a discrete deadline column,
+    # the regex will have matched it already and this aliasing is a no-op.
+    if "renewal_deadline" not in header_map and "renewal_window_end" in header_map:
+        header_map["renewal_deadline"] = header_map["renewal_window_end"]
+        warnings.append(
+            "renewal_deadline column not found — aliased to renewal_window_end "
+            "(OPTION DATES CLOSE doubles as the deadline in production)."
+        )
 
     # Flag missing optional columns so the UI can surface a "this column wasn't found" hint.
     expected = {"client", "address", "market", "lease_expiration",

@@ -317,6 +317,37 @@ def test_real_world_yn_strings_NEVER_leak_into_date_fields(fixture_real_world):
             )
 
 
+def test_real_world_renewal_deadline_aliased_to_window_end(fixture_real_world):
+    """P4.8: production file has no discrete Renewal Deadline column.
+    Verify renewal_deadline is aliased to renewal_window_end (OPTION DATES CLOSE)."""
+    result = mxr.action_all(str(fixture_real_world), None)
+    headers = result["headers"]
+    # Alias must populate renewal_deadline pointing at the same col as renewal_window_end.
+    assert "renewal_deadline" in headers, "P4.8 alias did not populate renewal_deadline"
+    assert headers["renewal_deadline"] == headers["renewal_window_end"], (
+        "renewal_deadline should alias to renewal_window_end's column index"
+    )
+    # Warning should explain the aliasing so it's not silent.
+    assert any("aliased" in w.lower() for w in result["warnings"]), (
+        "Expected an 'aliased' warning so the behavior is auditable"
+    )
+    # Row-level: Procopio DC's renewal_deadline must equal its renewal_window_end value.
+    dc = mxr.action_lookup(str(fixture_real_world), None, "Procopio", "DC")["rows"][0]
+    assert dc["renewal_deadline"] == dc["renewal_window_end"]
+    assert dc["renewal_deadline"].startswith("2026-08-28")
+
+
+def test_standard_fixture_alias_is_noop_when_discrete_column_exists(fixture_standard):
+    """When the sheet has a real 'Renewal Notice Deadline' column, the alias must NOT
+    overwrite it — the regex match wins and renewal_deadline stays distinct from window_end."""
+    result = mxr.action_all(str(fixture_standard), None)
+    headers = result["headers"]
+    assert "renewal_deadline" in headers
+    assert "renewal_window_end" in headers
+    # In fixture_standard, deadline (col 7) and window_end (col 6) are distinct columns.
+    assert headers["renewal_deadline"] != headers["renewal_window_end"]
+
+
 def test_yn_only_termination_column_guard_rejects(fixture_yn_only_termination):
     """If only "TERMINATION OPTION (Y/N)" exists, termination_deadline must NOT be matched.
     The negative lookahead + column-level type guard both defend against this."""
