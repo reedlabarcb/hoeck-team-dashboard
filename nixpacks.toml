@@ -1,10 +1,15 @@
 # Ensure Python (Phase 4 master_excel scripts) + Postgres client (pg_dump for Phase 2 backups)
 # are present in Railway's build image.
 #
-# openpyxl comes from Nix directly (python311Packages.openpyxl) — NOT from pip.
-# Reason: PEP 668 / Nix's immutable /nix/store filesystem blocks `pip install` system-wide
-# (error: externally-managed-environment). Using Nix's openpyxl sidesteps the issue
-# entirely and keeps the build image deterministic.
+# openpyxl is installed via Nix's `python311.withPackages` WRAPPER (not bare
+# `python311Packages.openpyxl`). Reason: in Nix, individual package derivations like
+# `python311Packages.openpyxl` get added to the build closure but are NOT linked into
+# the standalone `python` binary's sys.path. So `python -c "import openpyxl"` from the
+# command line fails with ModuleNotFoundError even though the package is "installed."
+# The `withPackages` wrapper creates a python-with-libraries binary where the listed
+# packages ARE on sys.path. Documented in:
+#   https://nixos.wiki/wiki/Python  (Python in Nixpkgs)
+#   https://nixos.org/manual/nixpkgs/stable/#python  (python.withPackages)
 #
 # requirements.txt is kept for local dev convenience (users who prefer pip in a venv)
 # but is NOT consumed by the Railway build.
@@ -12,8 +17,7 @@
 [phases.setup]
 nixPkgs = [
   'nodejs_20',
-  'python311',
-  'python311Packages.openpyxl',
+  '(python311.withPackages (ps: with ps; [ openpyxl ]))',
   'postgresql_16',
 ]
 
