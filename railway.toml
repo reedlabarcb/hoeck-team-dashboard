@@ -15,28 +15,26 @@ restartPolicyType = "on_failure"
 # and awaits walker completion. The cron's exit code reflects success/failure so Railway's
 # cron logs surface real errors instead of silent ones.
 #
-# >>> ALL CRONS COMMENTED OUT until one manual full walk has been verified end-to-end via
-# >>> the /files UI Refresh button. See P2.15.6 (separate commit) to re-enable.
-#
-# Re-enable conditions (must ALL be true):
-#   1. A manual full walk triggered via the UI button (Run full walk → confirm modal)
-#      completes successfully with status='completed' in box_sync_jobs.
-#   2. No orphan_recovery messages appear on the next two app boots after that walk
-#      (i.e., the worker survived the deploy gracefully).
-#   3. No Box token-refresh failures during the walk (clean activity_feed entries).
-#   4. Deep-folder search via /files returns a Procopio file 5+ folders deep.
-#   5. Re-enable as a separate commit titled "P2.15.6: enable Box sync crons" with the
-#      successful walkId referenced in the commit body.
-#
+# RE-ENABLED 2026-06-01 (commit P2.15.6) after all gates from P2.15.5 were met:
+#   1. ✓ Manual full walk completed (walkId 46058047-f6f1-4b1c-87ab-6f8f1e115725,
+#        jobId b269b3a0-7e03-4e87-8819-38196e7ca9ed, 27,352 items in 31 min 11 sec)
+#   2. ✓ Clean boot post-walk: "[boot] No orphaned sync jobs to recover."
+#   3. ✓ No box.token_invalid activity_feed entries during the walk
+#   4. ✓ Deep folder search returns 6-deep Procopio files (94 matches)
+
 # Daily incremental Box sync — 4 AM Pacific (12:00 UTC).
-# [[deploy.cronJobs]]
-# schedule = "0 12 * * *"
-# command = "npm run sync:box:incremental"
-#
+# Walks the tree using modified_at filtering against the last completed full walk's
+# started_at, so most subtrees are skipped. Catches additions + modifications, NOT deletions.
+[[deploy.cronJobs]]
+schedule = "0 12 * * *"
+command = "npm run sync:box:incremental"
+
 # Weekly full Box sync — 5 AM Pacific Sunday (13:00 UTC).
-# [[deploy.cronJobs]]
-# schedule = "0 13 * * 0"
-# command = "npm run sync:box:full"
+# Walks the entire tree, catching deletions that incremental sync misses.
+# Takes ~31 min on the current 27k-item Tenants - ChapmanHoeck tree (per 2026-06-01 baseline).
+[[deploy.cronJobs]]
+schedule = "0 13 * * 0"
+command = "npm run sync:box:full"
 
 # Weekly Postgres backup → Box, 5 AM Pacific Saturday (13:00 UTC).
 # COMMENTED OUT — P2.9 deferred (pg_dump streaming to Box backup folder).
