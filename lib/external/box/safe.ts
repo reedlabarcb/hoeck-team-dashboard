@@ -40,7 +40,7 @@ export const DEAL_FOLDER_PATTERN = /^(\d{4}(?:[–-]\d{4})?)\s*[–-]\s*Lease\s+
 const BOX_API = 'https://api.box.com/2.0';
 
 // Fields we request from Box for every item — keeps the wire format small + predictable.
-const ITEM_FIELDS = 'id,type,name,size,modified_at,parent,item_count,sha1,url,shared_link';
+const ITEM_FIELDS = 'id,type,name,size,modified_at,parent,item_count,sha1,url,shared_link,etag';
 
 function mapApiItem(api: BoxApiItem): BoxItem {
   return {
@@ -51,6 +51,7 @@ function mapApiItem(api: BoxApiItem): BoxItem {
     modifiedAt: api.modified_at,
     size: api.size,
     url: api.url ?? api.shared_link?.url,
+    etag: api.etag,
   };
 }
 

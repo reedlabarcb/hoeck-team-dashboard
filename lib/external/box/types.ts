@@ -12,6 +12,9 @@ export interface BoxItem {
   size?: number;
   // For web_link items (Box's shortcut/alias type), the resolved URL.
   url?: string;
+  // Box's per-resource etag; bumps every time the file changes. We use it as the
+  // cache key for the Master Excel reader (5-min etag-bound cache).
+  etag?: string;
 }
 
 export interface BoxFolder extends BoxItem {
@@ -47,6 +50,7 @@ export interface BoxApiItem {
   sha1?: string;
   url?: string;
   shared_link?: { url?: string };
+  etag?: string;
 }
 
 export interface BoxApiFolderListing {

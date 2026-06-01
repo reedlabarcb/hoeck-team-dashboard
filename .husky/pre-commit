@@ -5,7 +5,7 @@
 
 set -e
 
-FORBIDDEN="deleteFile|deleteFolder|moveFile|moveFolder|renameFile|updateCompany|updateContact|deleteCompany|deleteContact|updateActivity|deleteActivity|hardDelete|truncate"
+FORBIDDEN="deleteFile|deleteFolder|moveFile|moveFolder|renameFile|updateCompany|updateContact|deleteCompany|deleteContact|updateActivity|deleteActivity|hardDelete|writeMasterExcel|updateMasterExcel|deleteMasterExcel|modifyMasterExcel|overwriteMasterExcel|replaceMasterExcel|setMasterExcelCell|saveMasterExcel"
 
 # Look at staged Added/Copied/Modified files outside lib/external/ and test files.
 # Fail if any contain the forbidden patterns.
