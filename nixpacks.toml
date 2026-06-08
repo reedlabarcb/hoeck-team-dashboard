@@ -17,7 +17,9 @@
 [phases.setup]
 nixPkgs = [
   'nodejs_20',
-  '(python311.withPackages (ps: with ps; [ openpyxl ]))',
+  # openpyxl  → Phase 4 Master Excel reader (scripts/python/master_excel_read.py)
+  # pdfplumber → Phase 2.5a PDF text extractor (scripts/python/pdf_extract_text.py)
+  '(python311.withPackages (ps: with ps; [ openpyxl pdfplumber ]))',
   'postgresql_16',
 ]
 

@@ -1,7 +1,7 @@
 """
-Pytest fixtures for master_excel_read tests.
+Pytest fixtures for master_excel_read AND pdf_extract_text tests.
 
-Generates small xlsx files programmatically (openpyxl), exercising the
+Excel fixtures: generated programmatically (openpyxl), exercising the
 shapes the real TT Rep Master Client List might have:
 - formulas (data_only=True must read computed values)
 - multiple rows for one client (multi-market)
@@ -9,6 +9,12 @@ shapes the real TT Rep Master Client List might have:
 - column order variation
 - title rows above the header row
 - parenthesized market in client column ("Procopio (DC)")
+
+PDF fixtures (Phase 2.5a): generated programmatically (fpdf2), exercising the
+three pdf_extract_text status paths:
+- text-native multi-page  → expect status="ok"
+- scanned (no text layer) → expect status="scanned"
+- oversized stub          → expect status="too_large"
 """
 
 from __future__ import annotations
@@ -282,4 +288,83 @@ def fixture_yn_only_termination(tmp_path: Path) -> Path:
     ], 3)
     out = tmp_path / "yn_only_termination.xlsx"
     wb.save(out)
+    return out
+
+
+# ============================================================================
+# Phase 2.5a — PDF fixtures for pdf_extract_text tests
+# ============================================================================
+# fpdf2 is a small pure-Python PDF writer used here at test time only.
+# It is NOT a runtime dep (runtime uses pdfplumber to READ pdfs).
+# If fpdf2 isn't installed locally, these fixtures auto-skip via pytest.importorskip.
+
+
+@pytest.fixture
+def fixture_text_native_pdf(tmp_path: Path) -> Path:
+    """Multi-page PDF with real, extractable text on every page.
+    Expected pdf_extract_text result: status="ok", text contains all paragraphs."""
+    fpdf2 = pytest.importorskip("fpdf", reason="fpdf2 not installed; pip install fpdf2")
+    pdf = fpdf2.FPDF()
+    pdf.set_font("Helvetica", size=11)
+    # Page 1 — long enough to clear MIN_CHARS_FOR_TEXT_NATIVE on its own.
+    pdf.add_page()
+    pdf.multi_cell(0, 6,
+        "This is the first page of a text-native PDF used for testing. "
+        "It contains a legal-style paragraph long enough that the extractor "
+        "comfortably clears the 100-character minimum threshold for text-native "
+        "classification. Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+    )
+    # Page 2 — has a distinct legal phrase we can later prove was indexed.
+    pdf.add_page()
+    pdf.multi_cell(0, 6,
+        "Page two. The tenant shall pay base rent in equal monthly installments "
+        "in advance on the first day of each calendar month during the term."
+    )
+    # Page 3 — short, but the document is multi-page with plenty of total text.
+    pdf.add_page()
+    pdf.multi_cell(0, 6, "Page three closing language.")
+    out = tmp_path / "text_native.pdf"
+    pdf.output(str(out))
+    return out
+
+
+@pytest.fixture
+def fixture_scanned_pdf(tmp_path: Path) -> Path:
+    """Multi-page PDF with NO extractable text on any page — simulates a scanned
+    document (or one composed of rasterized images).
+    Expected pdf_extract_text result: status="scanned" because page_count>1 AND
+    character_count < MIN_CHARS_FOR_TEXT_NATIVE."""
+    fpdf2 = pytest.importorskip("fpdf", reason="fpdf2 not installed; pip install fpdf2")
+    pdf = fpdf2.FPDF()
+    # Three blank pages. fpdf2 produces structurally-valid empty pages that
+    # pdfplumber opens cleanly but extracts zero text from — same shape as a
+    # scanned-image PDF would present to a text extractor.
+    pdf.add_page()
+    pdf.add_page()
+    pdf.add_page()
+    out = tmp_path / "scanned.pdf"
+    pdf.output(str(out))
+    return out
+
+
+@pytest.fixture
+def fixture_oversized_pdf_stub(tmp_path: Path, monkeypatch) -> Path:
+    """Tiny stub PDF where we monkeypatch os.path.getsize to report > MAX_FILE_BYTES.
+    Avoids actually writing a 51 MB file just to test the size guard.
+    Expected pdf_extract_text result: status="too_large", no extraction attempted."""
+    fpdf2 = pytest.importorskip("fpdf", reason="fpdf2 not installed; pip install fpdf2")
+    pdf = fpdf2.FPDF()
+    pdf.add_page()
+    out = tmp_path / "oversized_stub.pdf"
+    pdf.output(str(out))
+
+    import os as _os
+    real_getsize = _os.path.getsize
+    # Wrap getsize so only THIS file reports as huge; other os.path.getsize calls
+    # (e.g. pytest internals) pass through untouched.
+    def fake_getsize(p):
+        if str(p) == str(out):
+            return 60 * 1024 * 1024  # 60 MB — above the 50 MB ceiling
+        return real_getsize(p)
+    monkeypatch.setattr(_os.path, "getsize", fake_getsize)
     return out
