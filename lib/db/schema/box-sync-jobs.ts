@@ -51,6 +51,15 @@ export const boxSyncJobStatusEnum = pgEnum('box_sync_job_status', [
 
 export const boxSyncJobModeEnum = pgEnum('box_sync_job_mode', ['full', 'incremental']);
 
+// Phase 2.5a: what kind of work this job represents.
+// 'folder_walk'     — the Box folder-tree BFS walker (Phase 2's original purpose)
+// 'text_extraction' — the PDF text-extraction worker (Phase 2.5a)
+// Existing rows are backfilled to 'folder_walk' by migration 0005.
+export const boxSyncJobTypeEnum = pgEnum('box_sync_job_type', [
+  'folder_walk',
+  'text_extraction',
+]);
+
 export const boxSyncJobs = pgTable(
   'box_sync_jobs',
   {
@@ -64,6 +73,9 @@ export const boxSyncJobs = pgTable(
     syncMode: boxSyncJobModeEnum('sync_mode').notNull().default('full'),
     // True when triggered via ?force=true or ?mode=full (helps debug surprise walks).
     isForceFull: boolean('is_force_full').notNull().default(false),
+    // Phase 2.5a: type of work this job represents. Default 'folder_walk' keeps
+    // existing walker code paths unchanged. Text-extraction worker writes 'text_extraction'.
+    jobType: boxSyncJobTypeEnum('job_type').notNull().default('folder_walk'),
 
     // Timing
     startedAt: timestamp('started_at', { withTimezone: true })
@@ -76,6 +88,19 @@ export const boxSyncJobs = pgTable(
     progressFilesIndexed: integer('progress_files_indexed').notNull().default(0),
     apiCallsMade: integer('api_calls_made').notNull().default(0),
     currentPath: text('current_path'),
+
+    // Phase 2.5a: live progress for text_extraction jobs (written at ≤5s cadence,
+    // same throttling pattern as the walker fields above). Always 0 / null for
+    // folder_walk jobs — the column union exists because both job kinds share
+    // this table per the "one job_runner, one orphan_recovery" architecture.
+    //   processed = succeeded + failed + skipped (running total)
+    //   succeeded = pdf_extract_text.py returned status='ok' AND we wrote extracted_text
+    //   failed    = pdf_extract_text.py returned status='error' OR the subprocess crashed
+    //   skipped   = status='scanned' or 'too_large' — not an error, just not indexed
+    progressFilesProcessed: integer('progress_files_processed').notNull().default(0),
+    progressFilesSucceeded: integer('progress_files_succeeded').notNull().default(0),
+    progressFilesFailed: integer('progress_files_failed').notNull().default(0),
+    progressFilesSkipped: integer('progress_files_skipped').notNull().default(0),
 
     // Completion summary
     totalFoldersInIndex: integer('total_folders_in_index'),
@@ -108,6 +133,9 @@ export const boxSyncJobs = pgTable(
     index('box_sync_jobs_started_at_idx').on(table.startedAt),
     // For "is there an active job right now?" — fast filter to queued+running.
     index('box_sync_jobs_status_idx').on(table.status),
+    // Phase 2.5a: speed up "latest job of this type" queries used by
+    // GET /api/box/sync/status (folder_walk) and GET /api/box/extract-text/status.
+    index('box_sync_jobs_job_type_started_at_idx').on(table.jobType, table.startedAt),
   ],
 );
 
