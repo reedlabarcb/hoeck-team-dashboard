@@ -81,26 +81,70 @@ export async function createJob(input: CreateJobInput): Promise<BoxSyncJob> {
 }
 
 /**
- * Find the most recent box_sync_jobs row (any status). Used by GET /api/box/sync/status.
+ * Find the most recent box_sync_jobs row (any status, any job_type).
+ * Used by GET /api/box/sync/status — the walker UI doesn't care about text-extraction jobs.
+ *
+ * For type-scoped queries (Phase 2.5a status endpoint), use getLatestJobByType().
  */
 export async function getLatestJob(): Promise<BoxSyncJob | null> {
   const rows = await db
     .select()
     .from(boxSyncJobs)
+    .where(eq(boxSyncJobs.jobType, 'folder_walk'))
     .orderBy(sql`${boxSyncJobs.startedAt} DESC`)
     .limit(1);
   return rows[0] ?? null;
 }
 
 /**
- * Find any active (queued or running) job. Used by POST /api/box/sync to detect
- * the "already in flight" case and return 409 instead of stacking another walk.
+ * Find any active (queued or running) folder_walk job. Used by POST /api/box/sync
+ * to detect the "already in flight" case and return 409 instead of stacking walks.
+ * Scoped to folder_walk so a running text_extraction never blocks a walker kickoff.
  */
 export async function getActiveJob(): Promise<BoxSyncJob | null> {
   const rows = await db
     .select()
     .from(boxSyncJobs)
-    .where(sql`${boxSyncJobs.status} IN ('queued', 'running')`)
+    .where(
+      sql`${boxSyncJobs.status} IN ('queued', 'running') AND ${boxSyncJobs.jobType} = 'folder_walk'`,
+    )
+    .orderBy(sql`${boxSyncJobs.startedAt} DESC`)
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+// ----- Phase 2.5a: type-scoped variants for the text-extraction status endpoint -----
+
+/**
+ * Find the most recent job of a specific job_type. Used by
+ * GET /api/box/extract-text/status so the text-extraction UI sees only its own jobs.
+ */
+export async function getLatestJobByType(
+  jobType: 'folder_walk' | 'text_extraction',
+): Promise<BoxSyncJob | null> {
+  const rows = await db
+    .select()
+    .from(boxSyncJobs)
+    .where(eq(boxSyncJobs.jobType, jobType))
+    .orderBy(sql`${boxSyncJobs.startedAt} DESC`)
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Find any active (queued or running) job of a specific job_type. Used by
+ * POST /api/box/extract-text so a running walker doesn't block extraction
+ * kickoff (and vice versa).
+ */
+export async function getActiveJobByType(
+  jobType: 'folder_walk' | 'text_extraction',
+): Promise<BoxSyncJob | null> {
+  const rows = await db
+    .select()
+    .from(boxSyncJobs)
+    .where(
+      sql`${boxSyncJobs.status} IN ('queued', 'running') AND ${boxSyncJobs.jobType} = ${jobType}`,
+    )
     .orderBy(sql`${boxSyncJobs.startedAt} DESC`)
     .limit(1);
   return rows[0] ?? null;
