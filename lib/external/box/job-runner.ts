@@ -34,18 +34,30 @@ export interface JobContext {
   jobId: string;
   walkId: string;
   // Walker calls this on every item. We coalesce writes inside.
+  // Phase 2.5a: text-extractor uses the same context shape; its caller
+  // populates `textExtraction` and leaves the walker-specific fields at 0.
   reportProgress(update: {
     foldersWalked: number;
     filesIndexed: number;
     apiCalls: number;
     currentPath: string;
+    /** Optional — populated only by the text-extraction worker. */
+    textExtraction?: {
+      processed: number;
+      succeeded: number;
+      failed: number;
+      skipped: number;
+    };
   }): Promise<void>;
 }
 
 export interface CreateJobInput {
   triggeredBy: string; // user.email or 'cron'
+  // Walker-only fields. Ignored for text-extraction jobs (they default to 'full'/false).
   syncMode: 'full' | 'incremental';
   isForceFull: boolean;
+  /** Phase 2.5a: which kind of work. Defaults to 'folder_walk' to keep older callers unchanged. */
+  jobType?: 'folder_walk' | 'text_extraction';
 }
 
 /**
@@ -59,6 +71,7 @@ export async function createJob(input: CreateJobInput): Promise<BoxSyncJob> {
       status: 'queued',
       syncMode: input.syncMode,
       isForceFull: input.isForceFull,
+      jobType: input.jobType ?? 'folder_walk',
       triggeredBy: input.triggeredBy,
       createdBy: 'job_runner',
       updatedBy: 'job_runner',
@@ -123,18 +136,30 @@ function buildContext(jobId: string, walkId: string): JobContext {
       if (now - lastWriteAt < PROGRESS_WRITE_INTERVAL_MS) return; // throttle
       lastWriteAt = now;
       try {
-        await db
-          .update(boxSyncJobs)
-          .set({
-            progressFoldersWalked: update.foldersWalked,
-            progressFilesIndexed: update.filesIndexed,
-            apiCallsMade: update.apiCalls,
-            currentPath: update.currentPath,
-            updatedBy: 'walker',
-          })
-          .where(eq(boxSyncJobs.id, jobId));
+        // Build the SET clause from whichever fields the caller populated.
+        // Walker passes folders/files/apiCalls; text-extractor passes textExtraction.
+        const set: Record<string, unknown> = {
+          currentPath: update.currentPath,
+          updatedBy: 'job_runner',
+        };
+        // Walker-shape fields — only write when non-zero (text-extractor passes 0s).
+        if (update.foldersWalked || update.filesIndexed || update.apiCalls) {
+          set.progressFoldersWalked = update.foldersWalked;
+          set.progressFilesIndexed = update.filesIndexed;
+          set.apiCallsMade = update.apiCalls;
+          set.updatedBy = 'walker';
+        }
+        // Text-extractor-shape fields.
+        if (update.textExtraction) {
+          set.progressFilesProcessed = update.textExtraction.processed;
+          set.progressFilesSucceeded = update.textExtraction.succeeded;
+          set.progressFilesFailed = update.textExtraction.failed;
+          set.progressFilesSkipped = update.textExtraction.skipped;
+          set.updatedBy = 'text_extractor';
+        }
+        await db.update(boxSyncJobs).set(set).where(eq(boxSyncJobs.id, jobId));
       } catch (err) {
-        // Progress writes are best-effort. A transient DB blip shouldn't kill the walk.
+        // Progress writes are best-effort. A transient DB blip shouldn't kill the work.
         console.error(`[job:${jobId}] progress write failed (continuing):`, err);
       }
     },
@@ -307,6 +332,107 @@ export async function kickOffWalk(opts: {
     await logActivity({
       actorUserId: userId,
       action: 'box.sync.failed',
+      entityType: 'box_sync_job',
+      entityId: jobId,
+      payload: { walkId, reason: err instanceof Error ? err.message : 'unknown' },
+      status: 'error',
+    });
+  }
+}
+
+// ============================================================================
+// Phase 2.5a — text-extraction job
+// ============================================================================
+
+/**
+ * Final write after a successful text-extraction run. Persists the four totals
+ * one more time (in case the throttler skipped the very last batch) and stamps
+ * status='completed'. Mirrors markJobCompleted's role for the walker.
+ */
+async function markTextExtractionCompleted(input: {
+  jobId: string;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+}): Promise<void> {
+  await db
+    .update(boxSyncJobs)
+    .set({
+      status: 'completed',
+      completedAt: sql`NOW()`,
+      progressFilesProcessed: input.processed,
+      progressFilesSucceeded: input.succeeded,
+      progressFilesFailed: input.failed,
+      progressFilesSkipped: input.skipped,
+      currentPath: null,
+      updatedBy: 'job_runner',
+    })
+    .where(eq(boxSyncJobs.id, input.jobId));
+}
+
+/**
+ * Fire-and-forget kickoff for a text-extraction job. Mirrors kickOffWalk's
+ * lifecycle: queued → running → completed/failed; orphan-recovery catches
+ * mid-run process death via the shared `status='running' AND stale` query.
+ *
+ * Call AFTER createJob({ jobType: 'text_extraction', ... }) has returned a row.
+ *
+ *   const job = await createJob({ jobType: 'text_extraction', ... });
+ *   void kickOffTextExtraction({ jobId: job.id, walkId: job.walkId, userId });
+ *   return NextResponse.json({ jobId: job.id }, { status: 202 });
+ */
+export async function kickOffTextExtraction(opts: {
+  jobId: string;
+  walkId: string;
+  userId: string;
+  /** Optional override of the per-run cap. Production uses default (10k). */
+  maxItems?: number;
+}): Promise<void> {
+  const { jobId, walkId, userId, maxItems } = opts;
+  const ctx = buildContext(jobId, walkId);
+
+  try {
+    await markJobRunning(jobId);
+    console.log(`[job:${jobId}] running text_extraction walkId=${walkId} userId=${userId}`);
+
+    // Lazy import to avoid pulling text-extractor.ts (and its child_process import)
+    // into routes that don't need it.
+    const { runTextExtraction } = await import('./text-extractor');
+    const result = await runTextExtraction({ userId, jobContext: ctx, maxItems });
+    await markTextExtractionCompleted({
+      jobId,
+      processed: result.processed,
+      succeeded: result.succeeded,
+      failed: result.failed,
+      skipped: result.skipped,
+    });
+
+    await logActivity({
+      actorUserId: userId,
+      action: 'box.text_extraction.completed',
+      entityType: 'box_sync_job',
+      entityId: jobId,
+      payload: {
+        walkId,
+        processed: result.processed,
+        succeeded: result.succeeded,
+        failed: result.failed,
+        skipped: result.skipped,
+        durationMs: result.durationMs,
+      },
+      status: 'ok',
+    });
+
+    console.log(
+      `[job:${jobId}] done text_extraction walkId=${walkId} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} skipped=${result.skipped} duration=${result.durationMs}ms`,
+    );
+  } catch (err) {
+    console.error(`[job:${jobId}] FAILED text_extraction walkId=${walkId}:`, err);
+    await markJobFailedInternal(jobId, err);
+    await logActivity({
+      actorUserId: userId,
+      action: 'box.text_extraction.failed',
       entityType: 'box_sync_job',
       entityId: jobId,
       payload: { walkId, reason: err instanceof Error ? err.message : 'unknown' },

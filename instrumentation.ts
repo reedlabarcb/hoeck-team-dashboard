@@ -8,6 +8,9 @@
  *   1. Mark orphaned box_sync_jobs as failed (status='running' AND stale updated_at).
  *      Lineage: the in-process walker doesn't survive Railway redeploys.
  *      docs/LESSONS_LEARNED.md will pick this up if a redeploy ever interrupts work.
+ *      Phase 2.5a: this also covers `job_type='text_extraction'` jobs — the
+ *      recovery query is intentionally type-agnostic so both worker kinds
+ *      get the same crash safety. The log line reports per-type counts.
  *
  * Constraints:
  *   - Failure here must NOT crash the server. Log loudly and continue.
@@ -24,8 +27,11 @@ export async function register() {
     const { markOrphanedJobsAsFailed } = await import('@/lib/external/box/orphan-recovery');
     const result = await markOrphanedJobsAsFailed();
     if (result.marked > 0) {
+      const breakdown = Object.entries(result.byType)
+        .map(([t, n]) => `${t}=${n}`)
+        .join(' ');
       console.log(
-        `[boot] Marked ${result.marked} orphaned sync jobs as failed: ${result.jobIds.join(', ')}`,
+        `[boot] Marked ${result.marked} orphaned sync jobs as failed (${breakdown}): ${result.jobIds.join(', ')}`,
       );
     } else {
       console.log('[boot] No orphaned sync jobs to recover.');

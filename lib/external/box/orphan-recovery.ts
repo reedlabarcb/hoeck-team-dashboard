@@ -30,20 +30,24 @@ const STALE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 export interface OrphanRecoveryResult {
   marked: number;
   jobIds: string[];
+  /** Phase 2.5a: breakdown by job_type so the boot log surfaces walker vs text-extractor orphans. */
+  byType: Record<string, number>;
 }
 
 export async function markOrphanedJobsAsFailed(): Promise<OrphanRecoveryResult> {
   const cutoff = new Date(Date.now() - STALE_THRESHOLD_MS);
 
   // Two-step so we can log which job IDs were orphaned (useful for post-mortem).
-  // The composite index (status, updated_at) makes this fast.
+  // The composite index (status, updated_at) makes this fast. The query is
+  // job_type-agnostic on purpose — Phase 2.5a's text_extraction jobs inherit
+  // the same recovery semantics as Phase 2's folder_walk jobs.
   const stale = await db
-    .select({ id: boxSyncJobs.id })
+    .select({ id: boxSyncJobs.id, jobType: boxSyncJobs.jobType })
     .from(boxSyncJobs)
     .where(and(eq(boxSyncJobs.status, 'running'), lt(boxSyncJobs.updatedAt, cutoff)));
 
   if (stale.length === 0) {
-    return { marked: 0, jobIds: [] };
+    return { marked: 0, jobIds: [], byType: {} };
   }
 
   await db
@@ -56,5 +60,10 @@ export async function markOrphanedJobsAsFailed(): Promise<OrphanRecoveryResult> 
     })
     .where(and(eq(boxSyncJobs.status, 'running'), lt(boxSyncJobs.updatedAt, cutoff)));
 
-  return { marked: stale.length, jobIds: stale.map((s) => s.id) };
+  const byType: Record<string, number> = {};
+  for (const s of stale) {
+    byType[s.jobType] = (byType[s.jobType] ?? 0) + 1;
+  }
+
+  return { marked: stale.length, jobIds: stale.map((s) => s.id), byType };
 }
