@@ -26,7 +26,7 @@ loadEnv({ path: '.env' });
 import { and, desc, isNull } from 'drizzle-orm';
 import { db } from '../lib/db';
 import { userBoxTokens } from '../lib/db/schema';
-import { createJob, kickOffWalk } from '../lib/external/box/job-runner';
+import { createJob, kickOffTextExtraction, kickOffWalk } from '../lib/external/box/job-runner';
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -82,6 +82,53 @@ async function syncRealNex(): Promise<void> {
   console.log('[sync:realnex] stub — wired in Phase 3.');
 }
 
+/**
+ * Phase 2.5a — PDF text-extraction cron entry point.
+ *
+ * Same identity-picking strategy as syncBox: use the most-recently-refreshed
+ * user_box_tokens row. That user's token is what downloadFile() will use to
+ * pull each pending PDF from Box.
+ *
+ * Awaits completion so the cron's exit code reflects success/failure.
+ */
+async function syncTextExtraction(): Promise<void> {
+  const candidates = await db
+    .select({ userId: userBoxTokens.userId, updatedAt: userBoxTokens.updatedAt })
+    .from(userBoxTokens)
+    .where(and(isNull(userBoxTokens.deletedAt)))
+    .orderBy(desc(userBoxTokens.updatedAt))
+    .limit(1);
+
+  if (candidates.length === 0) {
+    console.log(
+      '[sync:extract-text] no connected Box users yet — nothing to do. ' +
+        '(A team member needs to "Connect Box" on /files first.)',
+    );
+    return;
+  }
+  const indexer = candidates[0];
+  console.log(
+    `[sync:extract-text] using token from user ${indexer.userId} ` +
+      `(last refreshed ${indexer.updatedAt.toISOString()})`,
+  );
+
+  const job = await createJob({
+    triggeredBy: 'cron',
+    syncMode: 'full', // walker-shape field; ignored for text_extraction.
+    isForceFull: false,
+    jobType: 'text_extraction',
+  });
+  console.log(`[sync:extract-text] created job ${job.id} walkId=${job.walkId}`);
+
+  await kickOffTextExtraction({
+    jobId: job.id,
+    walkId: job.walkId,
+    userId: indexer.userId,
+  });
+
+  console.log(`[sync:extract-text] job ${job.id} finished`);
+}
+
 async function main(): Promise<void> {
   // Args:
   //   sync-cron.ts <target> [<mode>]
@@ -98,12 +145,15 @@ async function main(): Promise<void> {
     case 'realnex':
       await syncRealNex();
       break;
+    case 'extract-text':
+      await syncTextExtraction();
+      break;
     case 'all':
       await syncBox(mode);
       await syncRealNex();
       break;
     default:
-      throw new Error(`Unknown sync target: ${target}. Use one of: box, realnex, all.`);
+      throw new Error(`Unknown sync target: ${target}. Use one of: box, realnex, extract-text, all.`);
   }
 }
 

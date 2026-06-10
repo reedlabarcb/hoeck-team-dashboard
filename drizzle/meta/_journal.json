@@ -43,6 +43,13 @@
       "when": 1780953226262,
       "tag": "0005_pdf_text_extraction",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781017200000,
+      "tag": "0006_pdf_extraction_backfill",
+      "breakpoints": true
     }
   ]
 }

@@ -266,6 +266,79 @@ export async function checkPythonBridge(): Promise<CheckResult> {
   }
 }
 
+/**
+ * Phase 2.5a — text-extraction lifecycle visibility.
+ *
+ * Surfaces the four counts (extracted / pending / scanned / failed) so /api/health
+ * tells us at a glance how much of the PDF corpus is searchable. Also doubles as
+ * Reed's explicit Commit 1 post-deploy verification path: a successful response
+ * here proves the new columns + GENERATED tsvector are queryable in production.
+ *
+ * Status policy:
+ *   - ok    if any PDFs are extracted, OR everything pending (fresh phase, ready to run)
+ *   - warn  if failed > 0  (worker hit errors that ops should investigate)
+ *   - warn  if pending > 0 AND extracted > 0  (mid-run state; informational)
+ *   - fail  if the underlying query errors  (column missing → migration didn't apply)
+ */
+export async function checkTextExtraction(): Promise<CheckResult> {
+  if (!process.env.DATABASE_URL) {
+    return {
+      name: 'text_extraction',
+      status: 'not_configured',
+      detail: 'DATABASE_URL not set',
+    };
+  }
+  try {
+    const result = await db.execute(sql`
+      SELECT
+        count(*) FILTER (WHERE box_type = 'file' AND name ILIKE '%.pdf')::int           AS total_pdfs,
+        count(*) FILTER (WHERE extraction_status = 'extracted')::int                    AS extracted,
+        count(*) FILTER (WHERE extraction_status = 'pending')::int                      AS pending,
+        count(*) FILTER (WHERE extraction_status = 'failed')::int                       AS failed,
+        count(*) FILTER (WHERE extraction_status = 'skipped_scanned')::int              AS skipped_scanned,
+        count(*) FILTER (WHERE extraction_status = 'skipped_too_large')::int            AS skipped_too_large,
+        count(*) FILTER (WHERE extraction_status IS NULL
+                              AND box_type = 'file' AND name ILIKE '%.pdf')::int        AS null_status
+      FROM box_folder_index
+      WHERE deleted_at IS NULL
+    `);
+    const r = result.rows[0] as unknown as {
+      total_pdfs: number;
+      extracted: number;
+      pending: number;
+      failed: number;
+      skipped_scanned: number;
+      skipped_too_large: number;
+      null_status: number;
+    };
+    const status: CheckStatus = r.failed > 0 ? 'warn' : 'ok';
+    return {
+      name: 'text_extraction',
+      status,
+      detail:
+        `total_pdfs=${r.total_pdfs} extracted=${r.extracted} pending=${r.pending} ` +
+        `scanned=${r.skipped_scanned} too_large=${r.skipped_too_large} failed=${r.failed} ` +
+        `null_status=${r.null_status}`,
+      metadata: {
+        totalPdfs: r.total_pdfs,
+        extracted: r.extracted,
+        pending: r.pending,
+        failed: r.failed,
+        skippedScanned: r.skipped_scanned,
+        skippedTooLarge: r.skipped_too_large,
+        nullStatus: r.null_status,
+      },
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: 'text_extraction',
+      status: 'fail',
+      detail: `query failed: ${msg.slice(0, 240)}`,
+    };
+  }
+}
+
 export async function runAllChecks(): Promise<CheckResult[]> {
   return Promise.all([
     checkEnvVars(),
@@ -276,6 +349,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
     checkMasterExcelFile(),
     checkAnthropic(),
     checkPythonBridge(),
+    checkTextExtraction(),
   ]);
 }
 

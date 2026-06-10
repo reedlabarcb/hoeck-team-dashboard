@@ -16,6 +16,7 @@
     "sync:box:incremental": "tsx scripts/sync-cron.ts box incremental",
     "sync:box:full": "tsx scripts/sync-cron.ts box full",
     "sync:box": "tsx scripts/sync-cron.ts box incremental",
+    "sync:box:extract-text": "tsx scripts/sync-cron.ts extract-text",
     "sync:all": "tsx scripts/sync-cron.ts all incremental",
     "backup": "tsx scripts/backup-export.ts",
     "backup:weekly": "tsx scripts/backup-db.ts",
