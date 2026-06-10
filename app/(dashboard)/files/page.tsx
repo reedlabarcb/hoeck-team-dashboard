@@ -28,7 +28,9 @@ import { LastUpdated } from '@/components/LastUpdated';
 import { ConnectBoxBanner } from '@/components/ConnectBoxBanner';
 import { BoxRefreshButton } from '@/components/BoxRefreshButton';
 import { FullWalkConfirmModal } from '@/components/FullWalkConfirmModal';
+import { ExtractTextConfirmModal } from '@/components/ExtractTextConfirmModal';
 import { useBoxSyncStatus } from '@/lib/hooks/useBoxSyncStatus';
+import { useTextExtractionStatus } from '@/lib/hooks/useTextExtractionStatus';
 
 interface BoxFolderRow {
   id: string;
@@ -65,6 +67,24 @@ interface ChainEntry {
   depth: number;
 }
 
+interface SearchResults {
+  query: string;
+  filenames: BoxFolderRow[];
+  contents: (BoxFolderRow & { match_snippet: string; match_rank: number })[];
+}
+
+interface ExtractionStats {
+  totalPdfs: number;
+  extracted: number;
+  pending: number;
+  failed: number;
+  skippedScanned: number;
+  skippedTooLarge: number;
+  nullStatus: number;
+  lastRunCompletedAt: string | null;
+  lastRunJobId: string | null;
+}
+
 async function fetchConnection(): Promise<ConnectionState> {
   const res = await fetch('/api/box/connection', { cache: 'no-store' });
   if (!res.ok) throw new Error(`Connection check failed: ${res.status}`);
@@ -79,6 +99,34 @@ async function fetchFolders(opts: { parent?: string; q?: string }): Promise<BoxF
   if (!res.ok) throw new Error(`Folders fetch failed: ${res.status}`);
   const data = (await res.json()) as { entries: BoxFolderRow[] };
   return data.entries;
+}
+
+async function fetchCombinedSearch(q: string): Promise<SearchResults> {
+  const res = await fetch(`/api/box/folders/search?q=${encodeURIComponent(q)}`, {
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`Search failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchExtractionStats(): Promise<ExtractionStats> {
+  const res = await fetch('/api/box/extract-text/stats', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Extraction stats fetch failed: ${res.status}`);
+  return res.json();
+}
+
+function fmtRelativeTime(iso: string | null): string {
+  if (!iso) return 'never';
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const diffSec = Math.max(0, Math.round((now - then) / 1000));
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hr ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay} day${diffDay === 1 ? '' : 's'} ago`;
 }
 
 async function fetchChain(folderId?: string): Promise<ChainEntry[]> {
@@ -122,6 +170,130 @@ function formatDurationMin(ms: number): string {
   return `${min} min`;
 }
 
+interface SearchResultsViewProps {
+  search: ReturnType<typeof useQuery<SearchResults>>;
+  query: string;
+  drillInto: (row: BoxFolderRow) => void;
+  boxUrl: (row: BoxFolderRow) => string;
+}
+
+function SearchResultsView({ search, query, drillInto, boxUrl }: SearchResultsViewProps) {
+  if (search.isLoading) {
+    return <div className="p-6 text-sm text-gray-500">Searching…</div>;
+  }
+  if (search.isError) {
+    return <div className="p-6 text-sm text-red-700">Search failed.</div>;
+  }
+  const data = search.data;
+  if (!data || (data.filenames.length === 0 && data.contents.length === 0)) {
+    return (
+      <div className="p-6 text-sm text-gray-500">
+        No matches for &ldquo;{query}&rdquo; — neither filenames nor inside PDF text.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-6">
+      {/* Section 1: File and folder name matches */}
+      <section>
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+          File and folder names ({data.filenames.length})
+        </h2>
+        {data.filenames.length === 0 ? (
+          <p className="text-sm text-gray-500">No filename matches.</p>
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <table className="w-full text-sm">
+              <tbody className="divide-y divide-gray-100">
+                {data.filenames.map((row) => (
+                  <tr key={row.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => drillInto(row)}
+                        className="flex items-center gap-2 text-left"
+                      >
+                        <span className="text-base">
+                          {row.boxType === 'folder' ? '📁' : row.boxType === 'web_link' ? '🔗' : '📄'}
+                        </span>
+                        <span className="text-gray-900">{row.name}</span>
+                      </button>
+                      {row.pathSegments && row.pathSegments.length > 0 && (
+                        <div className="ml-7 mt-0.5 text-[11px] text-gray-500">
+                          {row.pathSegments.join(' / ')}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <Link
+                        href={boxUrl(row)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-700 hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        Box ↗
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* Section 2: Inside PDF documents (full-text content matches) */}
+      <section>
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Inside PDF documents ({data.contents.length}
+          {data.contents.length === 50 ? '+, ranked' : ''})
+        </h2>
+        {data.contents.length === 0 ? (
+          <p className="text-sm text-gray-500">No PDF content matches.</p>
+        ) : (
+          <ul className="space-y-2">
+            {data.contents.map((row) => (
+              <li
+                key={row.id}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-2 hover:border-gray-300"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="text-base">📄</span>
+                      <span className="font-medium text-gray-900">{row.name}</span>
+                    </div>
+                    {row.pathSegments && row.pathSegments.length > 0 && (
+                      <div className="ml-7 mt-0.5 text-[11px] text-gray-500">
+                        {row.pathSegments.join(' / ')}
+                      </div>
+                    )}
+                    {/* match_snippet is server-generated via ts_headline — we trust it
+                        to wrap <mark> safely. Postgres' ts_headline escapes embedded HTML. */}
+                    <p
+                      className="ml-7 mt-1 text-xs leading-relaxed text-gray-700 [&_mark]:rounded [&_mark]:bg-yellow-100 [&_mark]:px-0.5 [&_mark]:py-0 [&_mark]:font-medium [&_mark]:text-gray-900"
+                      dangerouslySetInnerHTML={{ __html: row.match_snippet }}
+                    />
+                  </div>
+                  <Link
+                    href={boxUrl(row)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Open in Box ↗
+                  </Link>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function FilesPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -143,12 +315,34 @@ function FilesPageInner() {
     enabled: connection.data?.connected === true,
   });
 
-  // Children of the current folder (or search results if query is non-empty).
+  // Children of the current folder — only when NOT in search mode.
   const folders = useQuery({
-    queryKey: ['box', 'folders', { parent: folderId, q: query }],
-    queryFn: () => fetchFolders({ parent: folderId, q: query || undefined }),
-    enabled: connection.data?.connected === true,
+    queryKey: ['box', 'folders', { parent: folderId }],
+    queryFn: () => fetchFolders({ parent: folderId }),
+    enabled: connection.data?.connected === true && !query,
   });
+
+  // Combined filename + PDF content search — only when query is non-empty.
+  // Phase 2.5a: this replaces the old /api/box/folders?q= path for search mode.
+  const search = useQuery({
+    queryKey: ['box', 'folders', 'search', query],
+    queryFn: () => fetchCombinedSearch(query),
+    enabled: connection.data?.connected === true && query.length > 0,
+  });
+
+  // PDF text-extraction stats for the status banner (refreshes every 30s and on
+  // text_extraction job state changes).
+  const stats = useQuery({
+    queryKey: ['box', 'extract-text', 'stats'],
+    queryFn: fetchExtractionStats,
+    enabled: connection.data?.connected === true,
+    refetchInterval: 30_000,
+  });
+
+  // Polling of the latest text_extraction job (mirrors useBoxSyncStatus for walker).
+  const textExtraction = useTextExtractionStatus({ enabled: connection.data?.connected === true });
+  const isTextExtractionActive =
+    textExtraction.job?.status === 'queued' || textExtraction.job?.status === 'running';
 
   // Async background-job pattern (P2.15.x):
   //   - POST /api/box/sync returns 202 immediately with { jobId, status }
@@ -189,10 +383,22 @@ function FilesPageInner() {
     if (sync.job?.status === 'completed') {
       void queryClient.invalidateQueries({ queryKey: ['box', 'folders'] });
       void queryClient.invalidateQueries({ queryKey: ['box', 'chain'] });
+      // Walker may have added or removed PDFs — bust extraction stats too.
+      void queryClient.invalidateQueries({ queryKey: ['box', 'extract-text', 'stats'] });
     }
   }, [sync.job?.status, queryClient]);
 
+  // When text extraction completes, the stats counts change AND any open search
+  // result that included content matches becomes stale — refetch both.
+  useEffect(() => {
+    if (textExtraction.job?.status === 'completed') {
+      void queryClient.invalidateQueries({ queryKey: ['box', 'extract-text', 'stats'] });
+      void queryClient.invalidateQueries({ queryKey: ['box', 'folders', 'search'] });
+    }
+  }, [textExtraction.job?.status, queryClient]);
+
   const [fullWalkModalOpen, setFullWalkModalOpen] = useState(false);
+  const [extractTextModalOpen, setExtractTextModalOpen] = useState(false);
 
   const startSync = useMutation({
     mutationFn: async (opts: { mode?: 'full' | 'incremental'; force?: boolean }) => {
@@ -221,6 +427,30 @@ function FilesPageInner() {
   const startFullWalk = () => {
     setFullWalkModalOpen(false);
     startSync.mutate({ mode: 'full' });
+  };
+
+  const startTextExtraction = useMutation({
+    mutationFn: async (opts: { force?: boolean }) => {
+      const params = new URLSearchParams();
+      if (opts.force) params.set('force', 'true');
+      const url = `/api/box/extract-text${params.toString() ? `?${params.toString()}` : ''}`;
+      const res = await fetch(url, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 202) return data;
+      if (res.status === 409) return data; // already running — pick up via polling
+      if (res.status === 412 && data.error === 'box_not_connected') {
+        throw new Error('Box not connected. Click "Connect Box" again.');
+      }
+      throw new Error(data.message || data.error || `Extract request failed: HTTP ${res.status}`);
+    },
+    onSuccess: () => {
+      void textExtraction.refetch();
+    },
+  });
+
+  const confirmExtractText = () => {
+    setExtractTextModalOpen(false);
+    startTextExtraction.mutate({});
   };
 
   if (connection.isLoading) {
@@ -309,8 +539,56 @@ function FilesPageInner() {
               Run full walk →
             </button>
           )}
+          {/* Extract PDF text button — appears next to Refresh only when there's
+              pending work AND we aren't already running an extraction. */}
+          {stats.data && (stats.data.pending > 0 || stats.data.nullStatus > 0) && !isTextExtractionActive && (
+            <button
+              type="button"
+              onClick={() => setExtractTextModalOpen(true)}
+              disabled={startTextExtraction.isPending}
+              className="text-[11px] text-blue-700 hover:text-blue-900 hover:underline disabled:opacity-50"
+              title={`${(stats.data.pending + stats.data.nullStatus).toLocaleString()} PDFs awaiting extraction`}
+            >
+              Extract PDF text →
+            </button>
+          )}
         </div>
       </div>
+
+      {/* PDF content-search status banner. Always visible when there are any indexed PDFs;
+          hidden when nothing's been indexed yet (cleaner empty state). */}
+      {stats.data && stats.data.totalPdfs > 0 && (
+        <div
+          className="mb-3 flex items-center justify-between gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs text-gray-700"
+          title={
+            `Extracted: ${stats.data.extracted.toLocaleString()}\n` +
+            `Pending:   ${(stats.data.pending + stats.data.nullStatus).toLocaleString()}\n` +
+            `Scanned:   ${stats.data.skippedScanned.toLocaleString()} (image-only, OCR in Phase 2.5b)\n` +
+            `Too large: ${stats.data.skippedTooLarge.toLocaleString()} (>50 MB)\n` +
+            `Failed:    ${stats.data.failed.toLocaleString()}`
+          }
+        >
+          <div>
+            <span className="font-medium text-gray-900">
+              PDF content search:{' '}
+              {stats.data.extracted.toLocaleString()} of {stats.data.totalPdfs.toLocaleString()} files indexed
+            </span>
+            {isTextExtractionActive && textExtraction.job && (
+              <span className="ml-2 text-blue-700">
+                · extracting: {textExtraction.job.progressFilesProcessed.toLocaleString()} processed
+                ({textExtraction.job.progressFilesSucceeded.toLocaleString()} ok,{' '}
+                {textExtraction.job.progressFilesSkipped.toLocaleString()} skipped,{' '}
+                {textExtraction.job.progressFilesFailed.toLocaleString()} failed)
+              </span>
+            )}
+          </div>
+          <div className="text-gray-500">
+            {stats.data.lastRunCompletedAt
+              ? `Last run: ${fmtRelativeTime(stats.data.lastRunCompletedAt)}`
+              : 'No extraction runs yet'}
+          </div>
+        </div>
+      )}
 
       {/* Back button + Breadcrumb */}
       <div className="mb-4 flex items-center gap-3">
@@ -456,15 +734,28 @@ function FilesPageInner() {
         onCancel={() => setFullWalkModalOpen(false)}
         onConfirm={startFullWalk}
       />
+      <ExtractTextConfirmModal
+        open={extractTextModalOpen}
+        onCancel={() => setExtractTextModalOpen(false)}
+        onConfirm={confirmExtractText}
+        pendingCount={(stats.data?.pending ?? 0) + (stats.data?.nullStatus ?? 0)}
+      />
 
-      {/* Listing */}
-      {folders.isLoading ? (
+      {/* ============ SEARCH MODE: two-section render ============ */}
+      {query ? (
+        <SearchResultsView
+          search={search}
+          query={query}
+          drillInto={drillInto}
+          boxUrl={boxUrl}
+        />
+      ) : folders.isLoading ? (
         <div className="p-6 text-sm text-gray-500">Loading folders…</div>
       ) : folders.isError ? (
         <div className="p-6 text-sm text-red-700">Failed to load folders.</div>
       ) : (folders.data?.length ?? 0) === 0 ? (
         <div className="p-6 text-sm text-gray-500">
-          {query ? `No matches for "${query}"` : 'No items yet. Click "Refresh from Box" to index.'}
+          No items yet. Click &ldquo;Refresh from Box&rdquo; to index.
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
