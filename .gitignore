@@ -63,3 +63,7 @@ backups/
 *.pgdump
 *.sql.gz
 
+# RealNex API discovery — raw JSON response samples may contain client PII.
+# Directory itself is created at script runtime; nothing inside is committed.
+docs/RealNex_API_Responses/
+
