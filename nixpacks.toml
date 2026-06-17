@@ -1,27 +1,46 @@
-# Ensure Python (Phase 4 master_excel scripts) + Postgres client (pg_dump for Phase 2 backups)
-# are present in Railway's build image.
+# Python runtime for the two production scripts:
+#   scripts/python/master_excel_read.py  -> openpyxl   (Phase 4)
+#   scripts/python/pdf_extract_text.py    -> pdfplumber (Phase 2.5a)
 #
-# openpyxl is installed via Nix's `python311.withPackages` WRAPPER (not bare
-# `python311Packages.openpyxl`). Reason: in Nix, individual package derivations like
-# `python311Packages.openpyxl` get added to the build closure but are NOT linked into
-# the standalone `python` binary's sys.path. So `python -c "import openpyxl"` from the
-# command line fails with ModuleNotFoundError even though the package is "installed."
-# The `withPackages` wrapper creates a python-with-libraries binary where the listed
-# packages ARE on sys.path. Documented in:
-#   https://nixos.wiki/wiki/Python  (Python in Nixpkgs)
-#   https://nixos.org/manual/nixpkgs/stable/#python  (python.withPackages)
+# We install these via pip into a venv using PREBUILT WHEELS, NOT via Nix's
+# `python311.withPackages`. History of how we got here:
+#   - 23ed550 dropped pip in favor of Nix because system-level pip hit PEP 668
+#     (externally-managed-environment) on Nix's immutable /nix/store.
+#   - 17ee228 used `python311.withPackages` so packages land on the interpreter's
+#     sys.path (bare `python311Packages.X` are in the closure but not importable).
+#   - BUT once pdfplumber was added (2a39ff0), `withPackages` started building the
+#     entire transitive closure FROM SOURCE on cache misses. pdfplumber's checkInputs
+#     pull pandas, whose checkInputs fan out to xarray / tables / blosc2 / xlsxwriter /
+#     scikit-build / torch. Nix ran each package's test suite during the build, and
+#     torch failed to compile -> image died ~40 min in (intermittent, cache-dependent).
 #
-# requirements.txt is kept for local dev convenience (users who prefer pip in a venv)
-# but is NOT consumed by the Railway build.
+# A venv threads BOTH historical needles:
+#   - a venv is NOT externally-managed, so no PEP 668 (fixes the 23ed550 problem)
+#   - venv packages ARE on that interpreter's sys.path (fixes the 17ee228 problem)
+# And `--only-binary=:all:` forces prebuilt manylinux/abi3 wheels for the whole
+# chain (openpyxl, pdfplumber, pdfminer.six, pillow, pypdfium2, cryptography,
+# charset-normalizer, et-xmlfile) -> ZERO compilation, ~15s install, and a LOUD
+# fast failure if any future version ever drops its wheel (instead of a silent
+# 40-min source build).
+#
+# PYTHON_BIN=/opt/venv/bin/python is set in Railway env so the TS bridge
+# (lib/external/master-excel/safe.ts + lib/external/box/text-extractor.ts, both of
+# which honor process.env.PYTHON_BIN) invokes the venv interpreter, NOT the bare
+# nix `python311` (which has neither package on its path).
+#
+# Pins are kept in lockstep with requirements.txt (local dev) for reproducibility.
 
 [phases.setup]
 nixPkgs = [
   'nodejs_20',
-  # openpyxl  → Phase 4 Master Excel reader (scripts/python/master_excel_read.py)
-  # pdfplumber → Phase 2.5a PDF text extractor (scripts/python/pdf_extract_text.py)
-  '(python311.withPackages (ps: with ps; [ openpyxl pdfplumber ]))',
+  'python311',
   'postgresql_16',
 ]
 
 [phases.install]
-cmds = ['npm ci']
+cmds = [
+  'npm ci',
+  'python3.11 -m venv /opt/venv',
+  '/opt/venv/bin/pip install --upgrade pip',
+  '/opt/venv/bin/pip install --no-cache-dir --only-binary=:all: openpyxl==3.1.2 pdfplumber==0.11.10',
+]
