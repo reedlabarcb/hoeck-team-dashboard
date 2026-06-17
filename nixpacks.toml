@@ -13,6 +13,10 @@
 #     pull pandas, whose checkInputs fan out to xarray / tables / blosc2 / xlsxwriter /
 #     scikit-build / torch. Nix ran each package's test suite during the build, and
 #     torch failed to compile -> image died ~40 min in (intermittent, cache-dependent).
+#     (Confirmed: P2.5a.5 / de6b83c deployed fine June 9 when cache.nixos.org HAD the
+#     closure cached; the very next commit P2.5a.6 -- no build-config change -- failed
+#     once the cache went cold. So it's cache-dependent, which is why we leave Nix
+#     entirely for the Python libs.)
 #
 # A venv threads BOTH historical needles:
 #   - a venv is NOT externally-managed, so no PEP 668 (fixes the 23ed550 problem)
@@ -22,6 +26,15 @@
 # charset-normalizer, et-xmlfile) -> ZERO compilation, ~15s install, and a LOUD
 # fast failure if any future version ever drops its wheel (instead of a silent
 # 40-min source build).
+#
+# ENSUREPIP HARDENING (the Nix gotcha): Nix's bare `python311` can ship a thin
+# stdlib where `python -m venv` cannot bootstrap pip. Three defenses below:
+#   1. `python311Packages.pip` in nixPkgs so pip machinery is in the closure.
+#   2. `python -m ensurepip --upgrade` after venv create (|| true: harmless no-op
+#      if venv already bootstrapped pip; bootstraps it if venv came up --without-pip).
+#   3. A build-time smoke assertion (`import openpyxl, pdfplumber; print('venv OK')`)
+#      as the LAST install cmd -> if the venv is broken, the build fails LOUDLY here
+#      with a clear message instead of mysteriously at runtime.
 #
 # PYTHON_BIN=/opt/venv/bin/python is set in Railway env so the TS bridge
 # (lib/external/master-excel/safe.ts + lib/external/box/text-extractor.ts, both of
@@ -34,6 +47,7 @@
 nixPkgs = [
   'nodejs_20',
   'python311',
+  'python311Packages.pip',
   'postgresql_16',
 ]
 
@@ -41,6 +55,8 @@ nixPkgs = [
 cmds = [
   'npm ci',
   'python3.11 -m venv /opt/venv',
-  '/opt/venv/bin/pip install --upgrade pip',
-  '/opt/venv/bin/pip install --no-cache-dir --only-binary=:all: openpyxl==3.1.2 pdfplumber==0.11.10',
+  '/opt/venv/bin/python -m ensurepip --upgrade || true',
+  '/opt/venv/bin/python -m pip install --upgrade pip',
+  '/opt/venv/bin/python -m pip install --no-cache-dir --only-binary=:all: openpyxl==3.1.2 pdfplumber==0.11.10',
+  "/opt/venv/bin/python -c \"import openpyxl, pdfplumber; print('venv OK')\"",
 ]
