@@ -35,7 +35,7 @@ Master Excel: append-only in v1.
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
 - [x] Phase 2: Box folder index — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after async-walker conversion (P2.15.1–P2.15.5). All 9 E2E steps pass. Final verified walkId `46058047-f6f1-4b1c-87ab-6f8f1e115725` (jobId `b269b3a0-7e03-4e87-8819-38196e7ca9ed`); 27,352 items indexed in 31 min 11 sec at 14.6 items/sec (faster than the original synchronous baseline). Box sync crons remain commented in `railway.toml` pending P2.15.6 re-enable commit. P2.9 (weekly pg_dump → Box) also deferred to a focused mini-phase.
-- [ ] Phase 3: RealNex sync + 4 workflows
+- [ ] Phase 3: RealNex sync + 4 workflows — **DISCOVERY COMPLETE 2026-06-17, build not started.** API spec + auth + connectivity all confirmed (see "RealNex API — Discovery" section below). Unblocked on connectivity/auth; ready to build when prioritized. NOT started — Phase 2.5a still mid-ship, awaiting Reed's word.
 - [x] Phase 4: Master Excel reads — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after iterative P4.1 → P4.9 fixes. All four critical date columns (lease expiration, renewal window start/end, renewal deadline, termination deadline) return correct dates against the real `TT Rep Master Client List 5.20.26.xlsx` (Box file id 2019476118993). Defense-in-depth Y/N filter holds: column-name negative lookahead + column-level + row-level date type guards. Cross-check verified live on production for both Procopio DC (1901 L St) and Downtown (525 B St) → returns the fully-executed lease PDF inside the right `Lease Document(s)` subfolder.
 - [ ] Phase 5: Master Excel appends
 - [ ] Phase 6: Box folder rename
@@ -151,6 +151,60 @@ Master Excel: append-only in v1.
 - `TERMINATION DATE` (col 8) currently has no destination field. If Mike asks for "what date does termination actually take effect," add `termination_effective_date` to RowDict + pattern.
 - `PROSPECTS` sheet of the workbook is unread (only the primary `CLIENTS` sheet is parsed). Defer to Phase 4.1 if needed for prospect workflows.
 - Sheet name typo `Sottsdale, AZ` in Box left as-is per Phase 2 "faithfully mirror Box" rule.
+
+## RealNex API — Discovery (COMPLETE 2026-06-17, Phase 3 build not started)
+
+**Spec:** `https://sync.realnex.com/swagger/v1/swagger.json` — OpenAPI 3.0.1,
+title "RealNex SyncAPI Data Facade" v1.0, **164 endpoints** across 14 tags.
+Committed to `docs/RealNex_API_Docs/swagger.json` (1.4 MB raw) +
+`docs/RealNex_API_Discovery.md` (human-readable reference). Commit `7d572f1`.
+
+**Base URL:** `https://sync.realnex.com` (no `servers` block in spec; host = spec host).
+- ⚠️ NOT `api.realnex.com` / `app.realnex.com` / `core.realnex.com` — those were
+  blind guesses from earlier probing and are the WRONG hosts. They're also blocked
+  by CBRE Zscaler at the CONNECT layer (HTTP 500 on tunnel), which sent us down a
+  hotspot rabbit hole. **`sync.realnex.com` IS allowed through CBRE Zscaler** — no
+  hotspot needed. Confirmed by curl (1.4 MB spec pulled) + the smoke test below.
+
+**Auth:** Bearer JWT. `components.securitySchemes.Bearer = {type:http, scheme:bearer,
+bearerFormat:JWT}`; top-level `security: [{Bearer:[]},{Basic:[]}]`. Header:
+`Authorization: Bearer <jwt>`. JWT lives in `.env.local` as `REALNEX_API_KEY`
+(gitignored, never committed). Token is scoped to **Mike Hoeck's** account
+(`name: "Mike Hoeck"`, `email: mike.hoeck@cbre.com`), `exp` ~year 2038 (no near-term
+rotation). All reads/writes via this token attribute to Mike in RealNex audit log —
+Phase 3 multi-user will need per-user JWTs or a service account.
+
+**Smoke test (2026-06-17):** `GET https://sync.realnex.com/api/Client?api-version=1.0`
+with Bearer JWT → **HTTP 200**, returned `ClientInfo` `{id (73-char account:user
+key), type:"Crm", clientName:"mike.hoeck@cbre.com"}`. Confirms base URL + auth +
+token validity + corp-network reachability. Ran via tsx one-liner with undici
+ProxyAgent (HOECK_USE_PROXY=1), JWT read from env (never in argv). One request only,
+no writes, no enumeration.
+
+**Node-fetch-through-proxy:** Node's built-in fetch does NOT honor HTTP_PROXY the way
+curl does. `scripts/realnex-discovery.ts` (uncommitted, now mostly obsolete) wires
+`undici`'s ProxyAgent gated on `HOECK_USE_PROXY` env flag. `undici@8.5.0` is a
+committed devDep (commit `42f0422`). For Phase 3 production on Railway, NO proxy
+plumbing is needed — Railway's egress isn't behind CBRE Zscaler.
+
+**Two gotchas for Phase 3 build:**
+1. **No company-list endpoint outside OData.** `CrmCompany` has GET-by-key, POST,
+   PUT, DELETE, and `/contacts`, but no "list all" or "search by name". Workflow 1's
+   company search must use the `CrmOData` tag (`/api/v1/Crm/odata/…`) OR a nightly
+   Postgres mirror. Contacts DO have `/api/v1/Crm/contact/autocomplete?Term=`.
+2. **History (activity) writes are object-scoped.** Create an activity via
+   `POST /api/v1/Crm/object/{objectKey}/history` (auto-links to parent
+   company/contact) — preferred over top-level `POST /api/v1/Crm/history` which
+   then needs a separate `.../object` association call. Read a record's activity
+   feed via `GET /api/v1/Crm/object/{objectKey}/history` (paginated).
+
+**Phase 3 safe-wrapper mapping** (see Discovery doc §8): `listCompanies`→OData/mirror,
+`getCompany`→`GET .../company/{key}/full`, `createCompany`→`POST .../company`,
+`listContacts`/`getContact`/`createContact`→contact endpoints, `listActivities`→
+`GET .../object/{key}/history`, `getActivity`→`GET .../history/{key}`,
+`createActivity`→`POST .../object/{key}/history`, `listGroups`→`GET .../group`.
+Forbidden methods (updateCompany/deleteCompany/etc.) still banned by safe.test.ts
+even though PUT/DELETE exist in the API.
 
 ## Known cleanups for Phase 2.1
 Small follow-ups identified during the async-walker conversion. None blocking.
