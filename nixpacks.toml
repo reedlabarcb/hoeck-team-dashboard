@@ -44,8 +44,12 @@
 # Pins are kept in lockstep with requirements.txt (local dev) for reproducibility.
 
 [phases.setup]
+# nodejs_22 (was nodejs_20): the Next.js 16 + Turbopack `next build` step failed on
+# Railway's node 20 with a postcss/turbopack child-process error, while building
+# clean on local node 26. node 22 is the current LTS and Next 16's recommended
+# floor for stable turbopack builds. Bumped to close the node-version gap.
 nixPkgs = [
-  'nodejs_20',
+  'nodejs_22',
   'python311',
   'python311Packages.pip',
   'postgresql_16',
