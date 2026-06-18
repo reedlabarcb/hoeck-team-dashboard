@@ -235,33 +235,39 @@ export async function checkAnthropic(): Promise<CheckResult> {
 }
 
 export async function checkPythonBridge(): Promise<CheckResult> {
+  // Probe the SAME interpreter the bridges actually use: PYTHON_BIN (the venv at
+  // /opt/venv/bin/python on Railway), falling back to bare `python` locally.
+  // Pre-2.5a this hardcoded bare `python`, which broke once we moved openpyxl +
+  // pdfplumber into a venv (they're no longer importable from the bare nix python).
+  // Both production scripts honor process.env.PYTHON_BIN, so this mirrors reality.
+  const pyBin = process.env.PYTHON_BIN || 'python';
   try {
-    const py = execSync('python --version', { encoding: 'utf-8', timeout: 5_000 }).trim();
-    let openpyxl = 'missing';
+    const py = execSync(`"${pyBin}" --version`, { encoding: 'utf-8', timeout: 5_000 }).trim();
+    let libs = 'missing';
     try {
-      openpyxl = execSync('python -c "import openpyxl; print(openpyxl.__version__)"', {
-        encoding: 'utf-8',
-        timeout: 5_000,
-      }).trim();
+      libs = execSync(
+        `"${pyBin}" -c "import openpyxl, pdfplumber; print(openpyxl.__version__, pdfplumber.__version__)"`,
+        { encoding: 'utf-8', timeout: 5_000 },
+      ).trim();
     } catch {
       return {
         name: 'python_bridge',
         status: 'warn',
-        detail: 'python OK but openpyxl missing — `pip install openpyxl` (used in Phase 4)',
-        metadata: { python: py },
+        detail: `python OK (${pyBin}) but openpyxl/pdfplumber not importable there — check the venv install`,
+        metadata: { python: py, pythonBin: pyBin },
       };
     }
     return {
       name: 'python_bridge',
       status: 'ok',
-      detail: 'python + openpyxl present',
-      metadata: { python: py, openpyxl },
+      detail: `python + openpyxl + pdfplumber present (${pyBin})`,
+      metadata: { python: py, libs, pythonBin: pyBin },
     };
   } catch {
     return {
       name: 'python_bridge',
       status: 'warn',
-      detail: 'python not on PATH — required in Phase 4 for Master Excel reads/appends',
+      detail: `python not found at PYTHON_BIN=${pyBin} — required for Master Excel reads + PDF extraction`,
     };
   }
 }
