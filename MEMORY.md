@@ -35,7 +35,8 @@ Master Excel: append-only in v1.
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
 - [x] Phase 2: Box folder index — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after async-walker conversion (P2.15.1–P2.15.5). All 9 E2E steps pass. Final verified walkId `46058047-f6f1-4b1c-87ab-6f8f1e115725` (jobId `b269b3a0-7e03-4e87-8819-38196e7ca9ed`); 27,352 items indexed in 31 min 11 sec at 14.6 items/sec (faster than the original synchronous baseline). Box sync crons remain commented in `railway.toml` pending P2.15.6 re-enable commit. P2.9 (weekly pg_dump → Box) also deferred to a focused mini-phase.
-- [ ] Phase 3: RealNex sync + 4 workflows — **DISCOVERY COMPLETE 2026-06-17, build not started.** API spec + auth + connectivity all confirmed (see "RealNex API — Discovery" section below). Unblocked on connectivity/auth; ready to build when prioritized. NOT started — Phase 2.5a still mid-ship, awaiting Reed's word.
+- [~] Phase 2.5a: PDF content search — **CODE 100% DEPLOYED & HEALTHY on `8810303` (2026-06-18); extraction E2E NOT yet run.** All P2.5a commits live, migration 0006 ran (6676 PDFs at `extraction_status='pending'`), `python_bridge` + `text_extraction` health checks both green. Remaining: kick the extraction job over the 6676 PDFs + verify content search. See "Phase 2.5a — PDF content search" section below.
+- [ ] Phase 3: RealNex sync + 4 workflows — **DISCOVERY COMPLETE 2026-06-17, build not started.** API spec + auth + connectivity all confirmed (see "RealNex API — Discovery" section below). Unblocked on connectivity/auth; ready to build when prioritized. NOT started.
 - [x] Phase 4: Master Excel reads — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after iterative P4.1 → P4.9 fixes. All four critical date columns (lease expiration, renewal window start/end, renewal deadline, termination deadline) return correct dates against the real `TT Rep Master Client List 5.20.26.xlsx` (Box file id 2019476118993). Defense-in-depth Y/N filter holds: column-name negative lookahead + column-level + row-level date type guards. Cross-check verified live on production for both Procopio DC (1901 L St) and Downtown (525 B St) → returns the fully-executed lease PDF inside the right `Lease Document(s)` subfolder.
 - [ ] Phase 5: Master Excel appends
 - [ ] Phase 6: Box folder rename
@@ -151,6 +152,59 @@ Master Excel: append-only in v1.
 - `TERMINATION DATE` (col 8) currently has no destination field. If Mike asks for "what date does termination actually take effect," add `termination_effective_date` to RowDict + pattern.
 - `PROSPECTS` sheet of the workbook is unread (only the primary `CLIENTS` sheet is parsed). Defer to Phase 4.1 if needed for prospect workflows.
 - Sheet name typo `Sottsdale, AZ` in Box left as-is per Phase 2 "faithfully mirror Box" rule.
+
+## Phase 2.5a — PDF content search (CODE DEPLOYED 2026-06-18, extraction E2E pending)
+
+**State:** Code 100% deployed + healthy on production. The extraction job has **never
+been run** — 0 PDFs extracted, all 6676 still `pending`. Content search returns nothing
+until the E2E extraction is kicked + completes.
+
+**What's live (commit `8810303`, active deployment `6ff5a55a`, 2026-06-18):**
+- All P2.5a commits: `.1` schema/migration → `.2` pdf_extract_text.py → `.3` worker →
+  `.4` API routes → `.5` `?content=` FTS → `.6` /files UI → `.7` backfill+health-check.
+- `migration 0006` ran on production: every PDF row in `box_folder_index` backfilled to
+  `extraction_status='pending'`. Confirmed via `/api/health` → `text_extraction`:
+  `total_pdfs=6676 extracted=0 pending=6676 scanned=0 too_large=0 failed=0 null_status=0`
+  (null_status=0 proves the backfill applied; pending=6676 is the work queue).
+- `python_bridge` health check: **ok** — `python + openpyxl + pdfplumber present
+  (/opt/venv/bin/python)`. Proves the venv interpreter works in the live image.
+- `text_extraction` health check: **ok** — proves P2.5a.7 code is live.
+
+**Deploy-blocker resolution (the 2026-06-18 saga — full detail in docs/LESSONS_LEARNED.md):**
+Four layered blockers, each hidden behind the previous, all fixed:
+1. **torch/Nix-from-source** (`6fa81c1`/`b83a9fd`) — `python311.withPackages` built
+   pdfplumber's transitive closure from source on cache-miss, dragging in
+   torch/pandas/xarray; the torch compile killed every build at ~40 min. Fix: switched
+   Python deps to **pip wheels in a venv** at `/opt/venv` (`--only-binary=:all:`, zero
+   compilation). `PYTHON_BIN=/opt/venv/bin/python` set in Railway env.
+2. **`npm ci` exit 1** (`2a5935f`) — Railway npm 10.8.2 rejected the npm-11-authored
+   lockfile. Fix: `npm install -g npm@11.16.0` before `npm ci`.
+3. **`next build` postcss/turbopack crash** (`47a7641`) — Next 16 turbopack unstable on
+   node 20. Fix: nixPkgs `nodejs_20` → `nodejs_22`.
+4. **`python_bridge` warn** (`c8619e1`) — health check probed bare `python`, not the
+   venv. Fix: probe `process.env.PYTHON_BIN`.
+- **`NIXPACKS_NO_CACHE=1`** was set temporarily to bust the stuck setup-layer cache so
+  the venv plan would take, then **removed** (`8810303` = clean cached rebuild that
+  succeeded, proving the pipeline is stable without it). Leaving it on slows every build
+  and is itself flaky.
+- The Railway **"Agent usage limit reached"** banner seen on failed deploys was a **red
+  herring** — Railway's AI-diagnostic throttle, NOT a build/budget cap. Never blocked a
+  build; ignore it.
+
+**Remaining task — the extraction E2E (never run):**
+1. POST `/api/box/extract-text` (or /files "Extract PDF text" button) → 202 + jobId.
+2. Poll `/api/box/extract-text/status` — watch processed/succeeded/failed/skipped climb
+   across 6676 PDFs. Expect 1-4 hours at ~1.5s/PDF. Patient-monitor pattern (periodic
+   status polls, NOT log scraping — see LESSONS_LEARNED #12).
+3. Watch the **failed** counter: occasional scanned/too_large skips are expected; a
+   fast-climbing `failed` count signals a systemic problem (Box download auth, or the
+   venv python not invoked under load).
+4. On completion: content search a known lease phrase → verify highlighted snippet +
+   `text_extraction` counts shift pending→extracted, scanned PDFs flagged.
+
+**Both API entry points require an auth session** (getSession().user) — POST/GET
+`/api/box/extract-text*` return 401 unauthenticated. Kick via a logged-in browser
+(Playwright) or the /files UI button, not a bare curl.
 
 ## RealNex API — Discovery (COMPLETE 2026-06-17, Phase 3 build not started)
 

@@ -141,3 +141,58 @@ The following came out of mining the prior repos and are worth holding onto even
     **Lesson:** never trust a single observability channel for terminal-state detection.
     Always layer authoritative-source poll + opportunistic log-grep. When the two
     disagree, the authoritative source wins.
+
+---
+
+## Phase 2.5a — Nix `withPackages` builds the full closure from source on cache-miss (the 40-min torch death)
+
+**Symptom:** Every Railway deploy from P2.5a.6 onward failed. Builds ran ~40 minutes
+then died compiling **torch** — a package we never asked for. Build logs showed Nix
+gcc-compiling `xarray`, `pandas`, `tables`, `blosc2`, `xlsxwriter`, `scikit-build`,
+`pyarrow`, `cmarkgfm` from source. Intermittent: P2.5a.5 (`de6b83c`) deployed fine
+on 2026-06-09, then the very next commit (pure TypeScript, no build-config change)
+failed — proving it was cache-state-dependent, not code-dependent.
+
+**Root cause:** `nixpacks.toml` installed Python libs via
+`(python311.withPackages (ps: with ps; [ openpyxl pdfplumber ]))`. When
+`cache.nixos.org` has binary substitutes for the whole closure, this is fast. On a
+cache MISS, Nix builds the entire transitive closure **from source** — and many
+nixpkgs Python derivations run their test suites (`doCheck = true`) during the build.
+`pdfplumber`'s check/propagated inputs pull `pandas`; `pandas`'s checkInputs fan out
+to the entire scientific stack including `torch`. So adding one innocuous PDF library
+silently dragged in a from-source torch compile that killed the image.
+
+**The full debugging arc (four layered blockers, each hidden behind the previous):**
+1. **torch/Nix-from-source** → fixed by leaving Nix for Python entirely: pip-install
+   `openpyxl` + `pdfplumber` into a venv at `/opt/venv` using `--only-binary=:all:`
+   (prebuilt manylinux/abi3 wheels → ZERO compilation, ~15s). A venv also threads two
+   earlier needles: not externally-managed (no PEP 668, which is why `23ed550` had
+   originally fled pip for Nix), and packages land on the interpreter's `sys.path`
+   (why `17ee228` had switched to `withPackages`). `PYTHON_BIN=/opt/venv/bin/python`
+   in Railway env points the TS bridge at the venv interpreter.
+2. **`npm ci` exit 1** (revealed once #1 cleared) → Railway's bundled **npm 10.8.2**
+   rejects a `package-lock.json` authored by **npm 11**. Real `npm ci` passed locally
+   under npm 11, so the lock was in sync — pure generator-version gap. Fix: prepend
+   `npm install -g npm@11.16.0` to the install phase.
+3. **`next build` postcss/turbopack crash** (revealed once #2 cleared) → Next 16
+   turbopack unstable on **node 20**. Fix: bump nixPkgs `nodejs_20` → `nodejs_22`.
+4. **`python_bridge` health check warn** → it hardcoded bare `python -c "import
+   openpyxl"`, which broke once openpyxl moved into the venv. Fix: probe
+   `process.env.PYTHON_BIN` (the interpreter the bridges actually use).
+
+**Also:** `NIXPACKS_NO_CACHE=1` was set temporarily to bust the stuck setup-layer
+cache and force the new venv plan to take, then **removed** once proven — leaving it
+on injects `nix-collect-garbage -d` + a full re-eval every build, which is slow AND
+itself flaky (one build failed purely from this). The Railway **"Agent usage limit
+reached"** banner that appeared on failures is a **red herring** — it's Railway's
+AI-diagnostic add-on being rate-limited, NOT a build/budget cap. It never blocked or
+caused a single build; every failure was a real build-step error.
+
+**Lesson:** On Railway, for any Python dependency beyond trivial pure-Python packages,
+prefer **pip wheels in a venv** over Nix `withPackages`. `withPackages` builds the
+full dependency closure from source on cache-miss — a single library (pdfplumber)
+transitively pulled torch/pandas/xarray and the from-source torch compile killed
+every build at ~40 min. pip with `--only-binary=:all:` uses prebuilt manylinux
+binaries (zero compilation), is deterministic, and fails fast/loud if a wheel is ever
+missing instead of silently falling into a multi-hour source build. Keep
+`requirements.txt` pins in lockstep with the `nixpacks.toml` venv install.
