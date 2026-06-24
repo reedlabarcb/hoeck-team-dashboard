@@ -5,7 +5,7 @@
 
 set -e
 
-FORBIDDEN="deleteFile|deleteFolder|moveFile|moveFolder|renameFile|updateCompany|updateContact|deleteCompany|deleteContact|updateActivity|deleteActivity|hardDelete|writeMasterExcel|updateMasterExcel|deleteMasterExcel|modifyMasterExcel|overwriteMasterExcel|replaceMasterExcel|setMasterExcelCell|saveMasterExcel"
+FORBIDDEN="deleteFile|deleteFolder|moveFile|moveFolder|renameFile|updateCompany|updateContact|deleteCompany|deleteContact|updateActivity|deleteActivity|hardDelete|writeMasterExcel|updateMasterExcel|deleteMasterExcel|modifyMasterExcel|overwriteMasterExcel|replaceMasterExcel|setMasterExcelCell|saveMasterExcel|editCompany|editContact|putCompany|putContact|patchCompany|patchContact|updateHistory|putHistory|patchHistory|deleteHistory|updateGroup|putGroup|patchGroup|deleteGroup|realnexPut|realnexPatch|realnexDelete|realnexRequest"
 
 # Look at staged Added/Copied/Modified files outside lib/external/ and test files.
 # Fail if any contain the forbidden patterns.
@@ -57,6 +57,31 @@ if [ -n "$POOL_VIOLATIONS" ]; then
   echo "Import the shared singleton: import { db } from '@/lib/db'"
   echo "See docs/LESSONS_LEARNED.md \"Phase 2 — Postgres connection pool leak\" for context."
   echo "If you have a legitimate reason (e.g. a new CLI script), put it under scripts/."
+  exit 1
+fi
+
+# ----------------------------------------------------------------------------
+# RealNex base URL may ONLY appear inside lib/external/realnex/ (the wrapper +
+# its HTTP client). All RealNex traffic goes through the wrapper, whose client
+# exposes no PUT/PATCH/DELETE primitive. A raw `sync.realnex.com` reference
+# anywhere else means someone is bypassing the wrapper (and could issue a
+# mutating verb) — block it. Reference: docs/PHASE3_BUILD_PLAN.md "Write Safety".
+# ----------------------------------------------------------------------------
+REALNEX_RAW_VIOLATIONS=$(
+  git diff --cached --name-only --diff-filter=ACM \
+    | grep -E "\.(ts|tsx|js|mjs)$" \
+    | grep -v "^lib/external/realnex/" \
+    | grep -v "\.test\." \
+    | xargs -r grep -l -E "sync\.realnex\.com" 2>/dev/null || true
+)
+
+if [ -n "$REALNEX_RAW_VIOLATIONS" ]; then
+  echo ""
+  echo "ERROR: raw 'sync.realnex.com' reference outside lib/external/realnex/:"
+  echo "$REALNEX_RAW_VIOLATIONS"
+  echo ""
+  echo "All RealNex calls MUST go through lib/external/realnex/safe.ts (read+create only)."
+  echo "A raw RealNex URL elsewhere bypasses the create-only safety wrapper."
   exit 1
 fi
 

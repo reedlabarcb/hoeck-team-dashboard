@@ -117,15 +117,30 @@ export async function checkRealNex(): Promise<CheckResult> {
     return {
       name: 'realnex',
       status: 'not_configured',
-      detail: 'REALNEX_API_KEY not set — wired in Phase 3',
+      detail: 'REALNEX_API_KEY not set — set in .env.local (local) / Railway (prod)',
     };
   }
-  // Phase 3: real ping. For now, presence of the key is enough.
-  return {
-    name: 'realnex',
-    status: 'warn',
-    detail: 'key present but live ping not implemented until Phase 3',
-  };
+  // Live probe: GET /api/Client via the read-only safe wrapper. Lowest-blast-radius
+  // RealNex call (identity only). Confirms key validity + RealNex host reachability.
+  // (The base URL literal lives ONLY in lib/external/realnex/client.ts, per the
+  // pre-commit guard — don't reintroduce it here.)
+  try {
+    const { getClientInfo } = await import('./external/realnex/safe');
+    const info = await getClientInfo();
+    return {
+      name: 'realnex',
+      status: 'ok',
+      detail: `reachable — authed as ${info.clientName ?? '(unknown)'} (${info.type ?? '?'})`,
+      metadata: { type: info.type },
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: 'realnex',
+      status: 'warn',
+      detail: `key present but GET /api/Client failed: ${msg.slice(0, 160)}`,
+    };
+  }
 }
 
 export async function checkBox(): Promise<CheckResult> {
