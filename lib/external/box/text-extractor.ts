@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PDF text-extraction worker (Phase 2.5a).
  *
  * Mirrors the walker.ts/job-runner.ts pattern, but instead of crawling the Box tree,
