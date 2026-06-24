@@ -130,6 +130,55 @@ def test_extract_corrupt_pdf_returns_error(tmp_path):
         assert payload["error"]
 
 
+# ----------------- NUL-byte sanitization (Phase 2.5a regression) -----------------
+
+def test_nul_bytes_stripped_status_ok(tmp_path, monkeypatch):
+    """Web-print PDFs (Bloomberg / Investing.com print-to-PDF) commonly embed NUL
+    (0x00) bytes in their text. Postgres `text` columns reject 0x00, which previously
+    made these PDFs fail to persist and stick at extraction_status='pending'. The
+    extractor must STRIP NULs at the source and return status='ok' with clean text.
+
+    We mock pdfplumber so page text deterministically contains NUL bytes — cleaner
+    than fighting a PDF generator to embed them."""
+    f = tmp_path / "nul_doc.pdf"
+    f.write_bytes(b"%PDF-1.4 dummy body")  # real file so isfile + size guards pass
+
+    class _FakePage:
+        def __init__(self, text):
+            self._text = text
+
+        def extract_text(self):
+            return self._text
+
+    class _FakePdf:
+        def __init__(self, pages):
+            self.pages = pages
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakePlumber:
+        def open(self, _path):
+            return _FakePdf([
+                _FakePage("Lease between Acme\x00 Corporation and the Landlord\x00 party."),
+                _FakePage("Base rent of \x00$10,000.00 per month for the demised premises."),
+            ])
+
+    monkeypatch.setattr(pxt, "_import_pdfplumber", lambda: _FakePlumber())
+
+    payload, exit_code = pxt.extract(str(f))
+    assert exit_code == 0
+    assert payload["status"] == "ok", payload
+    # The whole point: no NUL survives into the persisted text.
+    assert "\x00" not in payload["text"]
+    # And stripping is lossless for the surrounding content (NUL just vanishes).
+    assert "Acme Corporation and the Landlord party." in payload["text"]
+    assert "$10,000.00 per month" in payload["text"]
+
+
 # ----------------- argparse / smoke -----------------
 
 def test_cli_missing_required_arg_returns_2():

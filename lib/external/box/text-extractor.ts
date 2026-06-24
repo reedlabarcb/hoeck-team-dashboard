@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PDF text-extraction worker (Phase 2.5a).
  *
  * Mirrors the walker.ts/job-runner.ts pattern, but instead of crawling the Box tree,
@@ -10,28 +10,28 @@
  *        ORDER BY box_modified_at DESC NULLS LAST
  *        LIMIT MAX_PDFS_PER_RUN
  *   2. For each row:
- *      a. downloadFile() from Box → stream to /tmp/{box_id}.pdf
+ *      a. downloadFile() from Box â†’ stream to /tmp/{box_id}.pdf
  *      b. spawn scripts/python/pdf_extract_text.py --file-path /tmp/{box_id}.pdf
- *      c. parse JSON; map status → extraction_status; persist via UPDATE
+ *      c. parse JSON; map status â†’ extraction_status; persist via UPDATE
  *      d. delete /tmp/{box_id}.pdf (best-effort)
  *      e. bump in-memory counters, call ctx.reportProgress() (throttled to 5s)
  *
- * Status mapping (Python → DB):
- *   "ok"        → extraction_status='extracted',         is_text_native=true
- *   "scanned"   → extraction_status='skipped_scanned',   is_text_native=false
- *   "too_large" → extraction_status='skipped_too_large', is_text_native=null
- *   "error"     → extraction_status='failed', extraction_error=<msg>
- *   <crash>     → extraction_status='failed', extraction_error="subprocess crashed: <msg>"
+ * Status mapping (Python â†’ DB):
+ *   "ok"        â†’ extraction_status='extracted',         is_text_native=true
+ *   "scanned"   â†’ extraction_status='skipped_scanned',   is_text_native=false
+ *   "too_large" â†’ extraction_status='skipped_too_large', is_text_native=null
+ *   "error"     â†’ extraction_status='failed', extraction_error=<msg>
+ *   <crash>     â†’ extraction_status='failed', extraction_error="subprocess crashed: <msg>"
  *
- * IMPORTANT — generated column:
+ * IMPORTANT â€” generated column:
  *   `extracted_text_tsvector` is a Postgres GENERATED ALWAYS AS STORED column.
  *   This worker writes ONLY `extracted_text`. Postgres recomputes the tsvector
  *   automatically. See the warning block in lib/db/schema/box-folder-index.ts.
  *
- * IMPORTANT — orphan recovery:
+ * IMPORTANT â€” orphan recovery:
  *   The shared orphan-recovery hook in instrumentation.ts marks any
  *   `box_sync_jobs` row with status='running' AND updated_at < NOW() - 10min
- *   as failed, regardless of job_type — so this worker inherits the same crash
+ *   as failed, regardless of job_type â€” so this worker inherits the same crash
  *   safety as the walker without a separate code path.
  */
 
@@ -115,7 +115,7 @@ async function downloadToTmp(userId: string, boxId: string): Promise<string> {
 
 /**
  * Spawn pdf_extract_text.py and parse its JSON stdout. Rejects only on argparse
- * / IO failures (exit code >1) — exit 1 with status='error' is returned as data
+ * / IO failures (exit code >1) â€” exit 1 with status='error' is returned as data
  * so the caller can persist it as extraction_status='failed' with the message.
  */
 function runPython(filePath: string): Promise<PythonResponse> {
@@ -153,14 +153,27 @@ function runPython(filePath: string): Promise<PythonResponse> {
 }
 
 /**
+ * Strip NUL (0x00) bytes. Postgres `text`/`varchar` columns reject them outright
+ * ("invalid byte sequence for encoding UTF8: 0x00"), so ANY string we persist must
+ * be scrubbed first â€” including extraction_error, since an error message can itself
+ * embed NUL-containing extracted text (that double-fault is exactly why failed rows
+ * previously got stuck `pending`). Web-print PDFs (Bloomberg / Investing.com
+ * print-to-PDF) commonly embed NULs. Lossless for search. Defense-in-depth with the
+ * same strip at the source in scripts/python/pdf_extract_text.py.
+ */
+function stripNul<T extends string | null | undefined>(s: T): T {
+  return s == null ? s : (s.split(String.fromCharCode(0)).join('') as T);
+}
+
+/**
  * Persist Python's response back to box_folder_index.
  * Always sets extraction_attempted_at + extraction_completed_at to NOW().
  *
- * NOTE: we do NOT update extracted_text_tsvector — it's a Postgres GENERATED
+ * NOTE: we do NOT update extracted_text_tsvector â€” it's a Postgres GENERATED
  *       column and Postgres recomputes it from extracted_text automatically.
  */
 async function persistResult(boxId: string, py: PythonResponse): Promise<void> {
-  // Map Python status → DB extraction_status enum + decide what to persist.
+  // Map Python status â†’ DB extraction_status enum + decide what to persist.
   let extractionStatus:
     | 'extracted'
     | 'failed'
@@ -195,13 +208,15 @@ async function persistResult(boxId: string, py: PythonResponse): Promise<void> {
   await db
     .update(boxFolderIndex)
     .set({
-      extractedText,
+      // stripNul: Postgres text columns reject 0x00; scrub before write (defense-in-depth
+      // with the source strip in pdf_extract_text.py).
+      extractedText: stripNul(extractedText),
       extractionStatus,
       pageCount: py.page_count || null,
       isTextNative,
       extractionAttemptedAt: sql`NOW()`,
       extractionCompletedAt: sql`NOW()`,
-      extractionError,
+      extractionError: stripNul(extractionError),
       updatedBy: 'text_extractor',
     })
     .where(eq(boxFolderIndex.boxId, boxId));
@@ -218,7 +233,10 @@ async function persistOuterFailure(boxId: string, reason: string): Promise<void>
       extractionStatus: 'failed',
       extractionAttemptedAt: sql`NOW()`,
       extractionCompletedAt: sql`NOW()`,
-      extractionError: reason.slice(0, 4000),
+      // stripNul FIRST, then truncate — the reason can embed NUL-containing extracted
+      // text, and an un-scrubbed error write is exactly what left failed rows stuck
+      // `pending` before (the failure-recording UPDATE itself threw on 0x00).
+      extractionError: stripNul(reason).slice(0, 4000),
       updatedBy: 'text_extractor',
     })
     .where(eq(boxFolderIndex.boxId, boxId));
@@ -227,7 +245,7 @@ async function persistOuterFailure(boxId: string, reason: string): Promise<void>
 /**
  * Main entry point. Returns counts so the job-runner can write a completion summary.
  *
- * NOTE: this function does NOT touch box_sync_jobs directly — it only emits
+ * NOTE: this function does NOT touch box_sync_jobs directly â€” it only emits
  * progress via ctx and returns the final tally. The job-runner caller is
  * responsible for INSERT/UPDATE of the job row.
  */
@@ -292,7 +310,7 @@ export async function runTextExtraction(opts: {
         apiCalls: 0,
         currentPath: `${path}/${row.name}`,
         // The text-extraction-specific fields are layered on top via
-        // job-runner's extended context — see kickOffTextExtraction below.
+        // job-runner's extended context â€” see kickOffTextExtraction below.
         textExtraction: { processed, succeeded, failed, skipped },
       } as Parameters<JobContext['reportProgress']>[0]);
     }
@@ -312,3 +330,4 @@ export async function runTextExtraction(opts: {
     durationMs,
   };
 }
+

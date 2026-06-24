@@ -179,6 +179,12 @@ def extract(file_path: str) -> tuple[dict[str, Any], int]:
         )
 
     full_text = "\n".join(text_parts)
+    # Postgres `text` columns reject NUL (0x00) — "invalid byte sequence for encoding UTF8: 0x00".
+    # Web-print PDFs (e.g. Bloomberg / Investing.com print-to-PDF) commonly embed NUL bytes.
+    # Strip them at the source so extracted text is always safe to persist. NULs carry no
+    # semantic meaning in lease text — removing them is lossless for full-text search.
+    # Defense-in-depth: text-extractor.ts also strips before the DB write.
+    full_text = full_text.replace("\x00", "")
     character_count = len(full_text)
 
     # Scanned/image-only detection. Two-condition guard so a one-page cover
