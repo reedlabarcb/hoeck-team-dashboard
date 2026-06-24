@@ -221,17 +221,21 @@ Dependency order is strict top-to-bottom. **No write capability exists in the co
   confirmed it's a child append, parent fields untouched.
 - **Tests:** object-key resolution, event-type mapping, route.
 
-### P3.10 — Workflow 3 conversational parser ⚠️ GATED ON A DECISION (riskiest)
-- **Builds (IF approved):** free-text → structured History parse, chaining to create Company/Contact
-  if missing; confidence indicators; per-field confirmation on low confidence; multi-gate confirm
-  before ANY write.
-- **⚠️ BLOCKER:** the conversational parser requires an LLM. **MEMORY Key Decisions says Anthropic was
-  dropped 2026-05-21 ("structured form only for Workflow 3").** Reed's Phase 3 brief + Nadya's doc say
-  conversational. **Do not build until Reed picks:** (a) **structured-form-only** (skip the parser;
-  P3.9 already satisfies the core need) — recommended if the Anthropic decision still stands; (b)
-  **re-introduce Anthropic** (needs `ANTHROPIC_API_KEY` provisioned + a cost/privacy review since it
-  sends client text to an external LLM); (c) a non-LLM heuristic parser.
-- **Review gate:** depends on the chosen option; in all cases, no write fires without explicit confirm.
+### P3.10 — Workflow 3 conversational parser — ⛔ DEFERRED (decision 2026-06-24)
+**DEFERRED to a future Phase 3.x — not deleted, not in the Phase 3 v1 scope.** The structured
+History form (**P3.9**) is the shipping path for Workflow 3 and covers the core need (log an
+activity to an existing contact). Reasons for deferral, recorded for the team:
+- **Privacy/DLP:** a conversational parser sends client interaction text to an **external LLM**.
+  That requires a deliberate privacy/DLP review with Mike & Nadya before it's enabled — it is
+  **not** a v1 default. **MEMORY's "Anthropic dropped 2026-05-21" decision remains authoritative;
+  there is no contradiction — we are honoring it.**
+- **Risk:** the parser is the most error-prone piece of Phase 3; deferring it materially lowers
+  Phase 3 delivery risk.
+- **Revisit trigger:** an explicit decision from Reed/Mike/Nadya after a privacy review, at which
+  point this becomes Phase 3.x with: `ANTHROPIC_API_KEY` provisioning, a DLP review sign-off,
+  confidence indicators, per-field confirmation on low confidence, and multi-gate confirm before
+  any write. (Option (c), a non-LLM heuristic parser, stays on the table as a no-external-data
+  alternative.)
 
 ### P3.11 — Workflow 4: Filter + Excel export (locked column order)
 - **Builds:** filter UI over the mirror (Group, lease-expiration range, SF range, Tenant/Prospect),
@@ -249,19 +253,22 @@ Dependency order is strict top-to-bottom. **No write capability exists in the co
 
 ## Open questions / uncertainties (need Reed's input)
 
-1. **🚨 Conversational Workflow 3 vs. the dropped-Anthropic decision (P3.10).** The single biggest
-   contradiction. Which option (a/b/c above)? If Anthropic is truly out, P3.10 becomes "structured
-   form only" and P3.9 largely covers it.
+1. ~~Conversational Workflow 3 vs. the dropped-Anthropic decision (P3.10).~~ **RESOLVED 2026-06-24:
+   DEFERRED.** Structured form (P3.9) is the v1 path for Workflow 3; P3.10 (conversational/Anthropic)
+   is deferred pending a privacy/DLP review. MEMORY's "Anthropic dropped" decision stays authoritative.
 2. **OData enumeration (P3.2).** The mirror's whole feasibility rests on OData being able to page all
    companies/contacts. If it can't, the architecture changes (search-only, no full mirror). P3.2 is a
    spike specifically to de-risk this *before* schema/mirror work.
 3. **`POST company`/`POST contact` return "(no schema)" (P3.6).** Do they return the new record's key
    (body or `Location`)? W1→W2 chaining and immediate re-sync need that key. If not returned, we
    re-query by name/autocomplete — acceptable but worth confirming.
-4. **Single identity = Mike's JWT.** All dashboard writes will show as Mike in RealNex's audit trail.
-   OK for v1? Multi-user (per-user JWT / service account) is deferred — confirm that's acceptable.
-5. **`REALNEX_API_KEY` in Railway.** Currently only in local `.env.local`. Must be set in Railway prod
-   env before P3.1's health probe / any prod sync. (Single value = Mike's token.)
+4. ~~Single identity = Mike's JWT.~~ **APPROVED for v1 (2026-06-24).** Everything the dashboard
+   creates — every Company, Contact, and appended Activity — appears as **Mike-authored** in
+   RealNex's audit trail (the JWT is Mike's). This is a known, documented tradeoff; per-user
+   attribution (per-user JWT / service account) is a future enhancement, not v1.
+5. **`REALNEX_API_KEY` in Railway.** Currently only in local `.env.local`. **Set in Railway via CLI
+   at P3.1's prod-probe step — NOT before** (avoid a mid-planning deploy). Reed sets it when P3.1
+   reaches that step. (Single value = Mike's token.)
 6. **Tenant/Prospect/Occupier field mapping.** Nadya's doc uses checkboxes; the exact RealNex
    `CreateCompany`/`CreateContact` field names/representation are TBD — read from `swagger.json` in P3.6/7/8.
 7. **Web search for Website (W1).** Which mechanism — the same Playwright/stdlib approach used by the
