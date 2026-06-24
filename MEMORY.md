@@ -35,7 +35,7 @@ Master Excel: append-only in v1.
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
 - [x] Phase 2: Box folder index — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after async-walker conversion (P2.15.1–P2.15.5). All 9 E2E steps pass. Final verified walkId `46058047-f6f1-4b1c-87ab-6f8f1e115725` (jobId `b269b3a0-7e03-4e87-8819-38196e7ca9ed`); 27,352 items indexed in 31 min 11 sec at 14.6 items/sec (faster than the original synchronous baseline). Box sync crons remain commented in `railway.toml` pending P2.15.6 re-enable commit. P2.9 (weekly pg_dump → Box) also deferred to a focused mini-phase.
-- [~] Phase 2.5a: PDF content search — **CODE 100% DEPLOYED & HEALTHY on `8810303` (2026-06-18); extraction E2E NOT yet run.** All P2.5a commits live, migration 0006 ran (6676 PDFs at `extraction_status='pending'`), `python_bridge` + `text_extraction` health checks both green. Remaining: kick the extraction job over the 6676 PDFs + verify content search. See "Phase 2.5a — PDF content search" section below.
+- [x] Phase 2.5a: PDF content search — **COMPLETE 2026-06-24.** Extraction ran end-to-end (~8.5h on 2026-06-23 + a NUL-byte fix pass on 2026-06-24): **5,948 extracted · 682 scanned · 23 too-large · 23 failed · 0 pending** of 6,676. Content-search E2E verified on production (distinctive phrase → source PDF #1 with `<mark>` highlights; negative → clean empty). Live on `1fbc95d`. See "Phase 2.5a — PDF content search" section below.
 - [ ] Phase 3: RealNex sync + 4 workflows — **DISCOVERY COMPLETE 2026-06-17, build not started.** API spec + auth + connectivity all confirmed (see "RealNex API — Discovery" section below). Unblocked on connectivity/auth; ready to build when prioritized. NOT started.
 - [x] Phase 4: Master Excel reads — **OFFICIALLY STABLE** as of 2026-06-01. End-to-end verified on production after iterative P4.1 → P4.9 fixes. All four critical date columns (lease expiration, renewal window start/end, renewal deadline, termination deadline) return correct dates against the real `TT Rep Master Client List 5.20.26.xlsx` (Box file id 2019476118993). Defense-in-depth Y/N filter holds: column-name negative lookahead + column-level + row-level date type guards. Cross-check verified live on production for both Procopio DC (1901 L St) and Downtown (525 B St) → returns the fully-executed lease PDF inside the right `Lease Document(s)` subfolder.
 - [ ] Phase 5: Master Excel appends
@@ -153,13 +153,43 @@ Master Excel: append-only in v1.
 - `PROSPECTS` sheet of the workbook is unread (only the primary `CLIENTS` sheet is parsed). Defer to Phase 4.1 if needed for prospect workflows.
 - Sheet name typo `Sottsdale, AZ` in Box left as-is per Phase 2 "faithfully mirror Box" rule.
 
-## Phase 2.5a — PDF content search (CODE DEPLOYED 2026-06-18, extraction E2E pending)
+## Phase 2.5a — PDF content search (COMPLETE 2026-06-24)
 
-**State:** Code 100% deployed + healthy on production. The extraction job has **never
-been run** — 0 PDFs extracted, all 6676 still `pending`. Content search returns nothing
-until the E2E extraction is kicked + completes.
+**State:** DONE. Extraction ran end-to-end; content search verified working on production.
+Final `box_folder_index` distribution (6,676 PDFs):
+`extracted=5948 · scanned=682 (skipped_scanned, image-only) · too_large=23 (>50 MB) ·
+failed=23 (genuinely unextractable: corrupt/encrypted) · pending=0`.
 
-**What's live (commit `8810303`, active deployment `6ff5a55a`, 2026-06-18):**
+**Extraction E2E timeline:**
+- **2026-06-23** — first full run, ~8.5h (18:00→02:37 UTC), 5,900 extracted. Triggered via
+  authenticated POST `/api/box/extract-text`; processed sequentially (~10-15 PDF/min;
+  download from Box + pdfplumber + DB write per file). 48 left `pending`.
+- **2026-06-24** — the 48 stragglers (a batch of web-saved news-article PDFs indexed by a
+  Box cron mid-run) all failed on a NUL-byte write error; fixed (`3d56cb6` + `1fbc95d`)
+  and re-kicked → all 48 extracted, **pending=0**.
+
+**Content-search E2E verification (2026-06-24, production):**
+- `GET /api/box/folders/search?q="PERKINS COIE ANALYSIS SUMMARY BY COMPONENT"` → source
+  PDF `PerkinsCoie_PitchDeck_v02_AS_draft3.pdf` ranked **#1** with snippet
+  `<mark>PERKINS</mark> <mark>COIE</mark> <mark>ANALYSIS</mark> <mark>SUMMARY</mark> BY <mark>COMPONENT</mark> | MARCH 15, 2017 …`.
+- Distinctive proper nouns rank their source #1 (`"Perkins Coie"` rank 3.88; `"NXP
+  Semiconductors"` → its doc). Negative nonsense phrase → 0 results (clean empty).
+- Ranking note: route uses `plainto_tsquery` + `ts_rank_cd` (bag-of-words, frequency-
+  weighted) — a *common* phrase's source can rank #2 behind a longer doc; expected, not a
+  bug. (If exact-phrase-#1 ever matters, switch to `phraseto_tsquery`.)
+
+**NUL-byte fix (`3d56cb6`, deployed `1fbc95d`):** Postgres `text` columns reject `0x00`.
+~48 web-print PDFs (Bloomberg / Investing.com print-to-PDF) embed NUL bytes; pdfplumber
+extracted them fine but the DB write threw `invalid byte sequence for encoding "UTF8":
+0x00`, and the error-recording write ALSO threw (the message embedded the same NULs), so
+rows stuck `pending`. Fix, defense-in-depth: strip `\x00` at the source in
+`pdf_extract_text.py` AND via `stripNul()` on both `extracted_text` and `extraction_error`
+in `text-extractor.ts`. pytest regression added. (Build note: the fix commit `3d56cb6`
+first failed because a PowerShell `Set-Content -Encoding utf8` left a UTF-8 BOM on the
+`.ts` file — turbopack on Railway/node22 rejected it though local node26 tolerated it;
+stripped in `1fbc95d`.)
+
+**What's live (commit `1fbc95d`, 2026-06-24):**
 - All P2.5a commits: `.1` schema/migration → `.2` pdf_extract_text.py → `.3` worker →
   `.4` API routes → `.5` `?content=` FTS → `.6` /files UI → `.7` backfill+health-check.
 - `migration 0006` ran on production: every PDF row in `box_folder_index` backfilled to
@@ -191,16 +221,14 @@ Four layered blockers, each hidden behind the previous, all fixed:
   herring** — Railway's AI-diagnostic throttle, NOT a build/budget cap. Never blocked a
   build; ignore it.
 
-**Remaining task — the extraction E2E (never run):**
-1. POST `/api/box/extract-text` (or /files "Extract PDF text" button) → 202 + jobId.
-2. Poll `/api/box/extract-text/status` — watch processed/succeeded/failed/skipped climb
-   across 6676 PDFs. Expect 1-4 hours at ~1.5s/PDF. Patient-monitor pattern (periodic
-   status polls, NOT log scraping — see LESSONS_LEARNED #12).
-3. Watch the **failed** counter: occasional scanned/too_large skips are expected; a
-   fast-climbing `failed` count signals a systemic problem (Box download auth, or the
-   venv python not invoked under load).
-4. On completion: content search a known lease phrase → verify highlighted snippet +
-   `text_extraction` counts shift pending→extracted, scanned PDFs flagged.
+**Follow-ups (none blocking):**
+- **Re-extraction is incremental + safe to re-run** — the worker only selects
+  `extraction_status='pending'`, so POST `/api/box/extract-text` (force) picks up only new
+  PDFs added by future Box syncs. The 23 `failed` rows stay `failed` (not retried) unless
+  flipped back to `pending`; they're genuinely unextractable (corrupt/encrypted) so leave them.
+- **OCR for scanned PDFs** = Phase 2.5b (the 682 `skipped_scanned` are image-only).
+- **Cron** (`railway.toml`, commented `P2.5a.7b`) can be enabled to auto-extract new PDFs
+  on a schedule now that the manual E2E is proven.
 
 **Both API entry points require an auth session** (getSession().user) — POST/GET
 `/api/box/extract-text*` return 401 unauthenticated. Kick via a logged-in browser

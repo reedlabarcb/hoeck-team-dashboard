@@ -196,3 +196,55 @@ every build at ~40 min. pip with `--only-binary=:all:` uses prebuilt manylinux
 binaries (zero compilation), is deterministic, and fails fast/loud if a wheel is ever
 missing instead of silently falling into a multi-hour source build. Keep
 `requirements.txt` pins in lockstep with the `nixpacks.toml` venv install.
+
+---
+
+## Phase 2.5a — Postgres `text` columns reject NUL (0x00); sanitize extracted text before writing
+
+**Symptom:** After the main extraction run, 48 PDFs (a batch of web-saved news-article
+PDFs — Bloomberg / Investing.com print-to-PDF) refused to clear from
+`extraction_status='pending'`. A re-kick processed all 48, counted them all `failed`,
+yet they STAYED `pending` (the failure didn't even persist).
+
+**Root cause (from the worker logs):** `error: invalid byte sequence for encoding
+"UTF8": 0x00`. `pdfplumber` extracted the text fine, but the extracted text contained
+embedded **NUL bytes (0x00)**, which PostgreSQL `text`/`varchar` columns categorically
+cannot store. So the `UPDATE … SET extracted_text=…` threw. Worse — the catch path's
+`UPDATE … SET extraction_error=<message>` *also* threw, because the error message
+embedded the same NUL-containing extracted text. That double-fault is why the rows
+never even flipped to `failed`; they stayed `pending` forever.
+
+**Fix (defense-in-depth):**
+- `scripts/python/pdf_extract_text.py` — `text = text.replace('\x00', '')` at the
+  source, right after joining page text, before the JSON output.
+- `lib/external/box/text-extractor.ts` — a `stripNul()` helper applied to BOTH
+  `extracted_text` AND `extraction_error` before the DB write (the error-field strip is
+  essential — an un-scrubbed error write is what caused the stuck-`pending` double-fault).
+- pytest regression: mock pdfplumber to yield NUL-laden page text; assert output has no
+  `\x00` and `status='ok'`.
+
+**Lesson:** NUL bytes are never meaningful in extracted document text but appear
+routinely in web-print PDFs. Postgres rejects `0x00` in text columns outright. ALWAYS
+sanitize *every* string headed for a text column — not just the obvious content field
+but error/diagnostic fields too, since those can transitively carry the same bad bytes.
+Strip at the source AND defensively at the write boundary.
+
+---
+
+## Phase 2.5a — Never tie a monitor's exit condition to a derived count another process can move
+
+**Symptom:** A persistent background monitor watching the extraction kept running for
+~46 hours — long after the extraction job itself had completed (in ~8.5h). It showed in
+the task panel as a stuck "Running" task and couldn't be stopped from a later session
+(its task id was in a compacted session segment; it wasn't a findable OS process either,
+being isolated by the harness task runner).
+
+**Root cause:** the monitor's exit condition was `pending <= 0` (derived from
+`/api/health` PDF counts). But a Box sync cron indexed 48 new PDFs *during* the run and
+flipped them to `pending` — so `pending` never reached 0, and the loop never exited.
+
+**Lesson:** Never tie a monitor's exit condition to a derived count that another process
+(a sync cron, a concurrent job, a user action) can move. Exit on the **authoritative
+terminal signal** — here, the job row's own `status='completed'`/`'failed'` — not on a
+downstream aggregate. Corollary: give long-lived monitors a hard wall-clock cap and make
+sure they can be stopped (prefer the harness's job status over a count-watch loop).
