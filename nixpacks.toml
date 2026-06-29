@@ -66,7 +66,15 @@ nixPkgs = [
 cmds = [
   'npm install -g npm@11.16.0',
   'npm --version',
-  'npm ci',
+  # --include=dev: Railway sets NODE_ENV=production, under which `npm ci` PRUNES
+  # devDependencies. But the build-time toolchain lives in devDependencies —
+  # @tailwindcss/postcss (Turbopack's PostCSS plugin), tailwindcss, typescript,
+  # vitest, drizzle-kit, etc. Without them, `npm run build` (next build / Turbopack)
+  # fails with "exit code 1" on a fresh image. --include=dev forces devDeps to
+  # install regardless of NODE_ENV so the build always has its tools. This was the
+  # real cause of the intermittent build failures (green only when a cached
+  # node_modules layer happened to still contain devDeps).
+  'npm ci --include=dev',
   'python3.11 -m venv /opt/venv',
   '/opt/venv/bin/python -m ensurepip --upgrade || true',
   '/opt/venv/bin/python -m pip install --upgrade pip',
