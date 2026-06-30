@@ -50,6 +50,13 @@
       "when": 1781017200000,
       "tag": "0006_pdf_extraction_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782760956195,
+      "tag": "0007_realnex_mirror",
+      "breakpoints": true
     }
   ]
 }

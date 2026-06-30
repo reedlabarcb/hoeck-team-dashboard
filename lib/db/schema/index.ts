@@ -9,3 +9,7 @@ export * from './system-state';
 export * from './user-box-tokens';
 export * from './box-folder-index';
 export * from './box-sync-jobs';
+export * from './realnex-companies';
+export * from './realnex-contacts';
+export * from './realnex-groups';
+export * from './realnex-sync-jobs';
