@@ -143,6 +143,115 @@ export async function checkRealNex(): Promise<CheckResult> {
   }
 }
 
+/**
+ * Phase 3 (P3.4) - RealNex mirror readiness + freshness.
+ *
+ * Confirms the four mirror tables from migration 0007 exist and reports their row
+ * counts, plus a one-line summary of the most recent sync job. Doubles as the
+ * post-migration verification path (four tables present => 0007 applied in prod) and,
+ * once the P3.4 sync runs, as ongoing staleness monitoring.
+ *
+ * Status policy:
+ *   - fail if any of the four tables is missing (migration 0007 did not apply)
+ *   - warn if the most recent sync job ended in 'failed'
+ *   - ok   otherwise (empty-but-ready before the first sync; populated after)
+ */
+export async function checkRealNexMirror(): Promise<CheckResult> {
+  if (!process.env.DATABASE_URL) {
+    return { name: 'realnex_mirror', status: 'not_configured', detail: 'DATABASE_URL not set' };
+  }
+  const tables = [
+    'realnex_companies',
+    'realnex_contacts',
+    'realnex_groups',
+    'realnex_sync_jobs',
+  ] as const;
+  try {
+    // Existence first: count(*) on a missing table would abort the whole query.
+    const existsResult = await db.execute(sql`
+      SELECT
+        to_regclass('public.realnex_companies') IS NOT NULL AS "realnex_companies",
+        to_regclass('public.realnex_contacts')  IS NOT NULL AS "realnex_contacts",
+        to_regclass('public.realnex_groups')    IS NOT NULL AS "realnex_groups",
+        to_regclass('public.realnex_sync_jobs') IS NOT NULL AS "realnex_sync_jobs"
+    `);
+    const ex = (existsResult.rows[0] ?? {}) as Record<string, boolean>;
+    const missing = tables.filter((t) => !ex[t]);
+    if (missing.length > 0) {
+      return {
+        name: 'realnex_mirror',
+        status: 'fail',
+        detail: `missing tables: ${missing.join(', ')} - migration 0007 did not apply`,
+        metadata: { missing },
+      };
+    }
+
+    const countResult = await db.execute(sql`
+      SELECT
+        (SELECT count(*) FROM realnex_companies WHERE deleted_at IS NULL)::int AS companies,
+        (SELECT count(*) FROM realnex_contacts  WHERE deleted_at IS NULL)::int AS contacts,
+        (SELECT count(*) FROM realnex_groups    WHERE deleted_at IS NULL)::int AS groups,
+        (SELECT count(*) FROM realnex_sync_jobs)::int                          AS sync_jobs
+    `);
+    const c = (countResult.rows[0] ?? {}) as {
+      companies: number;
+      contacts: number;
+      groups: number;
+      sync_jobs: number;
+    };
+
+    // Latest sync job (staleness/monitoring). None exists before the first sync.
+    const jobResult = await db.execute(sql`
+      SELECT status::text AS status, completed_at,
+             companies_synced, contacts_synced, groups_synced, links_resolved
+      FROM realnex_sync_jobs
+      WHERE deleted_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    const job = jobResult.rows[0] as
+      | {
+          status: string;
+          completed_at: string | null;
+          companies_synced: number;
+          contacts_synced: number;
+          groups_synced: number;
+          links_resolved: number;
+        }
+      | undefined;
+
+    const lastSync = job
+      ? `last sync: ${job.status}` +
+        (job.completed_at ? ` @ ${job.completed_at}` : '') +
+        ` (companies=${job.companies_synced} contacts=${job.contacts_synced} ` +
+        `groups=${job.groups_synced} links=${job.links_resolved})`
+      : 'no sync has run yet (empty-but-ready)';
+
+    return {
+      name: 'realnex_mirror',
+      status: job?.status === 'failed' ? 'warn' : 'ok',
+      detail:
+        `tables present; rows: companies=${c.companies} contacts=${c.contacts} ` +
+        `groups=${c.groups} sync_jobs=${c.sync_jobs}. ${lastSync}`,
+      metadata: {
+        tablesPresent: true,
+        companies: c.companies,
+        contacts: c.contacts,
+        groups: c.groups,
+        syncJobs: c.sync_jobs,
+        latestSyncStatus: job?.status ?? null,
+      },
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: 'realnex_mirror',
+      status: 'fail',
+      detail: `query failed: ${msg.slice(0, 240)}`,
+    };
+  }
+}
+
 export async function checkBox(): Promise<CheckResult> {
   if (!process.env.BOX_ACCESS_TOKEN) {
     return {
@@ -365,6 +474,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
     checkEnvVars(),
     checkPostgres(),
     checkRealNex(),
+    checkRealNexMirror(),
     checkBox(),
     checkBoxRootFolder(),
     checkMasterExcelFile(),
