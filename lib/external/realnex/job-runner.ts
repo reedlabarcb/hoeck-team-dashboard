@@ -96,6 +96,32 @@ export async function markJobFailed(jobId: string, reason: string): Promise<void
     .where(eq(realnexSyncJobs.id, jobId));
 }
 
+/**
+ * Shape a realnex_sync_jobs row for the sync API + status polling. Shared by both routes
+ * (route.ts GET + status/route.ts) — kept here (not in a route file) because Next.js route
+ * modules may only export HTTP handlers + config.
+ */
+export function serializeRealnexJob(j: RealnexSyncJobRow) {
+  return {
+    id: j.id,
+    status: j.status,
+    currentPhase: j.currentPhase,
+    companiesSynced: j.companiesSynced,
+    contactsSynced: j.contactsSynced,
+    groupsSynced: j.groupsSynced,
+    linksResolved: j.linksResolved,
+    apiCallsMade: j.apiCallsMade,
+    rateLimitHits: j.rateLimitHits,
+    totalCompanies: j.totalCompanies,
+    totalContacts: j.totalContacts,
+    startedAt: j.startedAt.toISOString(),
+    completedAt: j.completedAt ? j.completedAt.toISOString() : null,
+    errorMessage: j.errorMessage,
+    triggeredBy: j.triggeredBy,
+    metadata: j.metadata,
+  };
+}
+
 /** Throttled progress context handed to the sync worker. */
 function buildContext(jobId: string): RealnexJobContext {
   let lastWriteAt = 0;
