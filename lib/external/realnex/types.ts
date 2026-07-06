@@ -126,3 +126,89 @@ export interface RealNexPaging {
   pageSize?: number;
   order?: string;
 }
+
+// ---------------------------------------------------------------------------
+// OData list-item shapes (P3.4 mirror sync). The feeds GET /api/v1/CrmOData/
+// Companies and /Contacts return RAW ARRAYS of these items — no {value:[]}
+// envelope, no @odata.count, no nextLink. Page with $skip/$top and stop when a
+// page returns fewer than $top rows.
+//
+// !!! GOTCHA: CompanyListItem has NO `name` field. The company name lives in
+// `organizationId` (typed String, despite the Id suffix). See realnex-companies.ts.
+// ---------------------------------------------------------------------------
+
+/** A nested address object; shape is loose, we store it verbatim as jsonb. */
+export type RealNexAddress = Record<string, unknown>;
+
+/** GET /api/v1/CrmOData/Companies item. Company NAME is in `organizationId`. */
+export interface RealNexCompanyListItem {
+  key?: string;
+  userKey?: string;
+  teamKey?: string;
+  organizationId?: string; // <- THE COMPANY NAME (not an id). See gotcha above.
+  subsidiaryId?: string;
+  investor?: boolean;
+  tenant?: boolean;
+  agent?: boolean;
+  vendor?: boolean;
+  personal?: boolean;
+  prospect?: boolean;
+  phone?: string;
+  fax?: string;
+  email?: string;
+  webSite?: string;
+  doNotCall?: boolean;
+  doNotEmail?: boolean;
+  doNotFax?: boolean;
+  doNotMail?: boolean;
+  address?: RealNexAddress;
+  lastActivity?: Record<string, unknown>;
+  objectGroups?: Array<Record<string, unknown>>;
+  [k: string]: unknown;
+}
+
+/** GET /api/v1/CrmOData/Contacts item. */
+export interface RealNexContactListItem {
+  key?: string;
+  userKey?: string;
+  teamKey?: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  salutation?: string;
+  greeting?: string;
+  title?: string;
+  investor?: boolean;
+  tenant?: boolean;
+  agent?: boolean;
+  vendor?: boolean;
+  personal?: boolean;
+  prospect?: boolean;
+  work?: string;
+  fax?: string;
+  mobile?: string;
+  home?: string;
+  email?: string;
+  webSite?: string;
+  doNotCall?: boolean;
+  doNotEmail?: boolean;
+  doNotFax?: boolean;
+  doNotMail?: boolean;
+  address?: RealNexAddress;
+  mailingAddress?: RealNexAddress;
+  lastActivity?: Record<string, unknown>;
+  objectGroups?: Array<Record<string, unknown>>;
+  [k: string]: unknown;
+}
+
+/**
+ * GET /api/v1/Crm/company/{key}/contacts — ContactListItemPageResponse.
+ * The inversion-walk envelope: RealNex's own PageNumber/PageSize paging.
+ */
+export interface RealNexContactListItemPage {
+  items?: RealNexContactListItem[];
+  pageNumber?: number;
+  pageSize?: number;
+  totalCount?: number;
+  [k: string]: unknown;
+}

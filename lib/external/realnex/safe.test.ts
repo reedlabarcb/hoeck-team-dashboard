@@ -13,7 +13,9 @@ import * as realnexSafe from './safe';
  */
 
 // The EXACT set of methods the wrapper may export at this phase.
-// P3.1 = read-only. When create methods land in P3.6/P3.9, add EXACTLY
+// P3.1 = 9 read methods. P3.4 added EXACTLY 3 more GET-only reads for the mirror
+// sync (listCompanies, listContacts, getCompanyContacts) — still read-only, no
+// create/update/delete. When create methods land in P3.6/P3.9, add EXACTLY
 // 'createCompany', 'createContact', 'appendActivity' here — nothing else.
 const ALLOWED = [
   'getClientInfo',
@@ -25,6 +27,10 @@ const ALLOWED = [
   'getContact',
   'searchContacts',
   'getObjectHistory',
+  // P3.4 read-only mirror-sync reads (GET only):
+  'listCompanies',
+  'listContacts',
+  'getCompanyContacts',
 ] as const;
 
 const FORBIDDEN = [

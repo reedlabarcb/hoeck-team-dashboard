@@ -53,6 +53,9 @@ import type {
   RealNexContact,
   RealNexHistoryPage,
   RealNexPaging,
+  RealNexCompanyListItem,
+  RealNexContactListItem,
+  RealNexContactListItemPage,
 } from './types';
 
 const enc = encodeURIComponent;
@@ -114,6 +117,45 @@ export function getObjectHistory(objectKey: string, paging: RealNexPaging = {}):
   });
 }
 
+// ----- OData enumeration + inversion (P3.4 read-only mirror sync) -----
+
+/**
+ * GET /api/v1/CrmOData/Companies — one OData page of companies (READ-ONLY).
+ * Returns a RAW ARRAY (no {value} envelope, no @odata.count, no nextLink): page
+ * with $skip/$top and stop when a page returns fewer than $top rows. The company
+ * NAME is each item's `organizationId` (see realnex-companies.ts gotcha).
+ */
+export function listCompanies(skip = 0, top = 500): Promise<RealNexCompanyListItem[]> {
+  return realnexGet<RealNexCompanyListItem[]>('/api/v1/CrmOData/Companies', {
+    query: { '$skip': skip, '$top': top },
+  });
+}
+
+/**
+ * GET /api/v1/CrmOData/Contacts — one OData page of contacts (READ-ONLY).
+ * Same raw-array $skip/$top paging as listCompanies.
+ */
+export function listContacts(skip = 0, top = 500): Promise<RealNexContactListItem[]> {
+  return realnexGet<RealNexContactListItem[]>('/api/v1/CrmOData/Contacts', {
+    query: { '$skip': skip, '$top': top },
+  });
+}
+
+/**
+ * GET /api/v1/Crm/company/{key}/contacts — contacts linked to one company (READ-ONLY).
+ * The ONLY read-side path to the contact->company link (RealNex exposes no company
+ * field on contact reads), so this drives the sync's inversion/linking phase.
+ * Paginated via PageNumber/PageSize; returns a {items,totalCount} envelope.
+ */
+export function getCompanyContacts(
+  companyKey: string,
+  paging: RealNexPaging = {},
+): Promise<RealNexContactListItemPage> {
+  return realnexGet<RealNexContactListItemPage>(`/api/v1/Crm/company/${enc(companyKey)}/contacts`, {
+    query: { PageNumber: paging.pageNumber ?? 1, PageSize: paging.pageSize ?? 200, Order: paging.order },
+  });
+}
+
 // ----- Create methods: NOT in P3.1 (read-only phase). Added in P3.6: -----
 // TODO(P3.6): createCompany(input): POST /api/v1/Crm/company       — tags Source: Dashboard
 // TODO(P3.6): createContact(input): POST /api/v1/Crm/contact       — tags Source: Dashboard
@@ -121,5 +163,5 @@ export function getObjectHistory(objectKey: string, paging: RealNexPaging = {}):
 //             — CREATES a child History on an existing record; NOT a parent edit.
 // (Each requires adding `realnexPost` to ./client. No PUT/PATCH/DELETE primitive — ever.)
 
-/** Read-only this phase. Bumped when create methods land (P3.6). */
-export const __SAFE_WRAPPER_VERSION = 'phase-3.1-readonly';
+/** Still read-only (P3.4 added GET-only OData reads). Bumped to *-writes when create methods land (P3.6). */
+export const __SAFE_WRAPPER_VERSION = 'phase-3.4-readonly';
