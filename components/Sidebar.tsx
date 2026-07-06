@@ -10,6 +10,7 @@ const NAV = [
   { label: 'Activities', href: '/activities', soon: true },
   { label: 'Files', href: '/files' },
   { label: 'Master Excel', href: '/master-excel' },
+  { label: 'RealNex Sync', href: '/realnex' },
   { label: 'Activity Feed', href: '/activity-feed', soon: true },
   { label: 'System Status', href: '/health' },
 ];
