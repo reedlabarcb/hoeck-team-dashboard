@@ -43,8 +43,13 @@ export const realnexSyncJobs = pgTable(
     groupsSynced: integer('groups_synced').notNull().default(0),
     linksResolved: integer('links_resolved').notNull().default(0),
     apiCallsMade: integer('api_calls_made').notNull().default(0),
+    // 429s encountered across the run - THE tuning signal for REALNEX_SYNC_CONCURRENCY
+    // (near-zero => 5 is safe / could go higher; climbing => lower the env var + re-kick).
+    rateLimitHits: integer('rate_limit_hits').notNull().default(0),
 
-    // Totals from OData $count (so the UI can show "N of M")
+    // Totals. OData feeds return raw arrays with NO @odata.count, so these are set
+    // after each enumeration phase completes (totalCompanies = companies_synced, etc.),
+    // giving the linking phase a denominator for "N of M".
     totalCompanies: integer('total_companies'),
     totalContacts: integer('total_contacts'),
 

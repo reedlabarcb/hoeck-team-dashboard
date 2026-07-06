@@ -40,4 +40,20 @@ export async function register() {
     // Never crash the server on startup hook failures. Log and continue.
     console.error('[boot] orphan-recovery failed (continuing anyway):', err);
   }
+
+  // Phase 3 (P3.4): the RealNex mirror sync is a separate in-process worker writing to
+  // realnex_sync_jobs (its own table), so it needs its own stale-'running' recovery.
+  try {
+    const { markOrphanedRealnexJobsAsFailed } = await import('@/lib/external/realnex/orphan-recovery');
+    const rn = await markOrphanedRealnexJobsAsFailed();
+    if (rn.marked > 0) {
+      console.log(
+        `[boot] Marked ${rn.marked} orphaned realnex sync jobs as failed: ${rn.jobIds.join(', ')}`,
+      );
+    } else {
+      console.log('[boot] No orphaned realnex sync jobs to recover.');
+    }
+  } catch (err) {
+    console.error('[boot] realnex orphan-recovery failed (continuing anyway):', err);
+  }
 }

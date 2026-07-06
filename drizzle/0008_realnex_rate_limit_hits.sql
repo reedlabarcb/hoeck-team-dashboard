@@ -1,0 +1,1 @@
+ALTER TABLE "realnex_sync_jobs" ADD COLUMN "rate_limit_hits" integer DEFAULT 0 NOT NULL;

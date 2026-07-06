@@ -27,6 +27,7 @@ import { and, desc, isNull } from 'drizzle-orm';
 import { db } from '../lib/db';
 import { userBoxTokens } from '../lib/db/schema';
 import { createJob, kickOffTextExtraction, kickOffWalk } from '../lib/external/box/job-runner';
+import { createJob as createRealnexJob, kickOffRealnexSync } from '../lib/external/realnex/job-runner';
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -78,8 +79,13 @@ async function syncBox(mode: 'full' | 'incremental'): Promise<void> {
 }
 
 async function syncRealNex(): Promise<void> {
-  // Phase 3 implements this.
-  console.log('[sync:realnex] stub — wired in Phase 3.');
+  // Read-only mirror sync (P3.4). Creates a realnex_sync_jobs row (triggered_by='cron')
+  // and AWAITS completion so the cron exit code reflects success/failure — the same single
+  // code path the UI POST route fires-and-forgets. Orphan recovery covers process death.
+  const job = await createRealnexJob({ triggeredBy: 'cron' });
+  console.log(`[sync:realnex] created job ${job.id}`);
+  await kickOffRealnexSync({ jobId: job.id });
+  console.log(`[sync:realnex] job ${job.id} finished`);
 }
 
 /**
