@@ -295,6 +295,10 @@ async function linkContacts(
   jobId: string,
 ): Promise<number> {
   if (contactKeys.length === 0) return 0;
+  // GUID CASE MISMATCH: the OData feeds return UPPERCASE keys (stored in realnex_key) while
+  // /Crm/company/{key}/contacts returns lowercase keys for the SAME contacts. GUIDs are
+  // case-insensitive, so match on lower() both sides - otherwise every link UPDATE hits 0 rows.
+  const lowered = contactKeys.map((k) => k.toLowerCase());
   const updated = await db
     .update(realnexContacts)
     .set({
@@ -305,7 +309,7 @@ async function linkContacts(
       updatedAt: sql`NOW()`,
       updatedBy: sql`'realnex_sync'`,
     })
-    .where(and(inArray(realnexContacts.realnexKey, contactKeys), isNull(realnexContacts.deletedAt)))
+    .where(and(inArray(sql`lower(${realnexContacts.realnexKey})`, lowered), isNull(realnexContacts.deletedAt)))
     .returning({ k: realnexContacts.realnexKey });
   return updated.length;
 }
