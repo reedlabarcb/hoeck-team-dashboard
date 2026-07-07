@@ -190,12 +190,14 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
       SELECT
         (SELECT count(*) FROM realnex_companies WHERE deleted_at IS NULL)::int AS companies,
         (SELECT count(*) FROM realnex_contacts  WHERE deleted_at IS NULL)::int AS contacts,
+        (SELECT count(*) FROM realnex_contacts  WHERE deleted_at IS NULL AND company_key IS NOT NULL)::int AS contacts_linked,
         (SELECT count(*) FROM realnex_groups    WHERE deleted_at IS NULL)::int AS groups,
         (SELECT count(*) FROM realnex_sync_jobs)::int                          AS sync_jobs
     `);
     const c = (countResult.rows[0] ?? {}) as {
       companies: number;
       contacts: number;
+      contacts_linked: number;
       groups: number;
       sync_jobs: number;
     };
@@ -244,9 +246,10 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
       status: job?.status === 'failed' ? 'warn' : 'ok',
       detail:
         `tables present; rows: companies=${c.companies} contacts=${c.contacts} ` +
-        `groups=${c.groups} sync_jobs=${c.sync_jobs}. ${lastSync}`,
+        `(linked=${c.contacts_linked}) groups=${c.groups} sync_jobs=${c.sync_jobs}. ${lastSync}`,
       metadata: {
         tablesPresent: true,
+        contactsLinked: c.contacts_linked,
         companies: c.companies,
         contacts: c.contacts,
         groups: c.groups,
