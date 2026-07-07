@@ -3,7 +3,8 @@
  * GET  /api/realnex/sync   — latest job + state (same shape as /api/realnex/sync/status).
  *
  * Query params (POST):
- *   ?force=true   abandon any active job and start a new one.
+ *   ?force=true         abandon any active job and start a new one.
+ *   ?rebuildLinks=true  clear all contact->company links first, then re-walk (drift remedy).
  *
  * Responses:
  *   202 + { jobId, status }                    — new job created
@@ -42,7 +43,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const force = new URL(request.url).searchParams.get('force') === 'true';
+  const url = new URL(request.url);
+  const force = url.searchParams.get('force') === 'true';
+  const rebuildLinks = url.searchParams.get('rebuildLinks') === 'true';
 
   // Active-job guard: 409 with current progress unless ?force=true abandons it.
   const active = await getActiveJob();
@@ -75,9 +78,9 @@ export async function POST(request: NextRequest) {
 
   // Fire-and-forget. Node keeps the process alive while the promise is pending; if it dies
   // mid-sync, orphan-recovery marks the row failed on next boot.
-  void kickOffRealnexSync({ jobId: job.id, userId: session.user.id });
+  void kickOffRealnexSync({ jobId: job.id, userId: session.user.id, rebuildLinks });
 
-  console.log(`[realnex-sync] POST started jobId=${job.id} triggeredBy=${session.user.email}`);
+  console.log(`[realnex-sync] POST started jobId=${job.id} triggeredBy=${session.user.email} rebuildLinks=${rebuildLinks}`);
 
   return NextResponse.json({ jobId: job.id, status: job.status }, { status: 202 });
 }

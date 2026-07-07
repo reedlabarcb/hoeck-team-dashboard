@@ -286,7 +286,16 @@ async function upsertGroups(items: RealNexGroup[], jobId: string): Promise<void>
     });
 }
 
-/** Materialize the contact->company link for one company. Returns rows actually updated. */
+/**
+ * Materialize the contact->company link for one company. Returns rows actually updated.
+ *
+ * SET-ONLY (drift caveat): only SETS company_key/company_name; it never re-points or clears a
+ * link. So a contact re-associated (A -> B) or un-associated in RealNex is NOT corrected by
+ * nightly runs - the mirror's links slowly drift from RealNex truth. Remedy: a full link
+ * rebuild (the "Rebuild links" button / POST /api/realnex/sync?rebuildLinks=true) NULLs all
+ * company_key first, then re-walks so the run converges to truth. See MEMORY.md. Making
+ * nightly runs self-converge (Path 2) is a known future refinement.
+ */
 async function linkContacts(
   contactKeys: string[],
   companyKey: string,
@@ -318,8 +327,13 @@ async function linkContacts(
  * Run the full read-only mirror sync. Pushes throttled progress via ctx.reportProgress and
  * returns final counts + the list of companies whose inversion was skipped after retries.
  */
-export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): Promise<RealnexSyncResult> {
-  const { jobContext: ctx } = opts;
+export async function runRealnexSync(opts: {
+  jobContext: RealnexJobContext;
+  /** Drift remedy: NULL every company_key before the linking phase so the inversion
+   *  re-populates from scratch (converges the mirror to RealNex truth). See linkContacts. */
+  rebuildLinks?: boolean;
+}): Promise<RealnexSyncResult> {
+  const { jobContext: ctx, rebuildLinks = false } = opts;
   const startedAt = Date.now();
   const concurrency = resolveConcurrency();
 
@@ -408,6 +422,22 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
 
   // ---- Phase 4: linking (inversion walk) ----
   counters.phase = 'linking';
+  if (rebuildLinks) {
+    // Drift remedy (see linkContacts): clear every link first, so this run's inversion
+    // converges the mirror to RealNex truth (a contact no longer under any company -> NULL).
+    const cleared = await db
+      .update(realnexContacts)
+      .set({
+        companyKey: null,
+        companyName: null,
+        companyNameNormalized: null,
+        updatedAt: sql`NOW()`,
+        updatedBy: sql`'realnex_sync'`,
+      })
+      .where(isNull(realnexContacts.deletedAt))
+      .returning({ k: realnexContacts.realnexKey });
+    console.log(`[realnex-sync] rebuildLinks: cleared company_key on ${cleared.length} contacts before re-walk`);
+  }
   const companies = await db
     .select({
       key: realnexCompanies.realnexKey,

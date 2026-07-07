@@ -36,6 +36,22 @@ command = "npm run sync:box:incremental"
 schedule = "0 13 * * 0"
 command = "npm run sync:box:full"
 
+# ---------------- Phase 3 (P3.4) — RealNex mirror sync cron ----------------
+# Nightly RealNex -> Postgres mirror sync — 3 AM Pacific (11:00 UTC), an hour before the 4 AM
+# Box incremental so the two in-process workers don't overlap. Creates a realnex_sync_jobs row
+# (triggered_by='cron') and AWAITS completion; the ~1,300-call run takes <1 min at concurrency
+# 5 (rate_limit_hits=0 confirmed across multiple runs).
+#
+# ENABLED 2026-07-07 after the manual first sync + idempotency were verified: companies=1,276 /
+# contacts=1,870 / groups=28 / contacts_linked=1,769 stable across two runs, zero duplicates.
+#
+# DRIFT CAVEAT: linking is SET-ONLY (see lib/external/realnex/sync.ts linkContacts + MEMORY.md)
+# — it won't re-point/clear links for contacts re-associated or un-associated in RealNex, so
+# links can slowly drift. Remedy: the "Rebuild links" button / POST /api/realnex/sync?rebuildLinks=true.
+[[deploy.cronJobs]]
+schedule = "0 11 * * *"
+command = "npm run sync:realnex"
+
 # Weekly Postgres backup → Box, 5 AM Pacific Saturday (13:00 UTC).
 # COMMENTED OUT — P2.9 deferred (pg_dump streaming to Box backup folder).
 # Don't fire crons into the void.

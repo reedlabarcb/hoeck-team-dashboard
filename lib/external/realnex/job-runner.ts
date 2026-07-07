@@ -164,7 +164,7 @@ async function markJobRunning(jobId: string): Promise<void> {
 }
 
 /** Unconditional final write on success (persists final counts + metadata, ignores throttle). */
-async function markJobCompleted(jobId: string, r: RealnexSyncResult): Promise<void> {
+async function markJobCompleted(jobId: string, r: RealnexSyncResult, rebuildLinks: boolean): Promise<void> {
   await db
     .update(realnexSyncJobs)
     .set({
@@ -185,6 +185,7 @@ async function markJobCompleted(jobId: string, r: RealnexSyncResult): Promise<vo
         skippedCount: r.skippedCompanyKeys.length,
         durationMs: r.durationMs,
         concurrency: resolveConcurrency(),
+        rebuildLinks,
       },
       updatedAt: sql`NOW()`,
       updatedBy: 'realnex_sync',
@@ -215,18 +216,23 @@ async function markJobFailedInternal(jobId: string, err: unknown): Promise<void>
  * The cron path AWAITS it (so the cron exit code reflects success). Orphan recovery handles
  * mid-run process death via the shared status='running' AND stale query.
  */
-export async function kickOffRealnexSync(opts: { jobId: string; userId?: string | null }): Promise<void> {
-  const { jobId, userId } = opts;
+export async function kickOffRealnexSync(opts: {
+  jobId: string;
+  userId?: string | null;
+  /** Drift remedy: clear all company_key before re-walking so the run converges to truth. */
+  rebuildLinks?: boolean;
+}): Promise<void> {
+  const { jobId, userId, rebuildLinks = false } = opts;
   const ctx = buildContext(jobId);
   try {
     await markJobRunning(jobId);
-    console.log(`[realnex-job:${jobId}] running (concurrency=${resolveConcurrency()})`);
+    console.log(`[realnex-job:${jobId}] running (concurrency=${resolveConcurrency()}, rebuildLinks=${rebuildLinks})`);
 
     // Lazy import to avoid a runtime import cycle (./sync imports the RealnexJobContext type
     // from this file). Type-only imports are erased, but the runtime edge lives here.
     const { runRealnexSync } = await import('./sync');
-    const result = await runRealnexSync({ jobContext: ctx });
-    await markJobCompleted(jobId, result);
+    const result = await runRealnexSync({ jobContext: ctx, rebuildLinks });
+    await markJobCompleted(jobId, result, rebuildLinks);
 
     await logActivity({
       actorUserId: userId ?? null,

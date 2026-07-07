@@ -81,11 +81,15 @@ function RealnexSyncInner() {
     return () => clearInterval(id);
   }, [isActive]);
 
-  async function runSync(force = false) {
+  async function runSync(opts: { force?: boolean; rebuildLinks?: boolean } = {}) {
     setKickErr(null);
     setKicking(true);
     try {
-      const res = await fetch(`/api/realnex/sync${force ? '?force=true' : ''}`, { method: 'POST' });
+      const params = new URLSearchParams();
+      if (opts.force) params.set('force', 'true');
+      if (opts.rebuildLinks) params.set('rebuildLinks', 'true');
+      const qs = params.toString();
+      const res = await fetch(`/api/realnex/sync${qs ? `?${qs}` : ''}`, { method: 'POST' });
       if (res.status === 401) {
         setKickErr('Not signed in.');
         return;
@@ -130,15 +134,34 @@ function RealnexSyncInner() {
             contact&rarr;company inversion walk. Writes nothing back to RealNex.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => runSync(false)}
-          disabled={isActive || kicking}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-          title="Start a read-only RealNex -> Postgres mirror sync"
-        >
-          {isActive ? 'Sync running…' : kicking ? 'Starting…' : 'Run sync'}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Rebuild links? This CLEARS every contact->company link, then re-walks RealNex to repopulate them from scratch. Use it to correct link drift from re-associations. Otherwise it runs like a normal sync.',
+                )
+              ) {
+                runSync({ rebuildLinks: true });
+              }
+            }}
+            disabled={isActive || kicking}
+            className="inline-flex items-center gap-1.5 rounded border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Clear all contact->company links and rebuild them fresh from RealNex (drift remedy)"
+          >
+            Rebuild links
+          </button>
+          <button
+            type="button"
+            onClick={() => runSync()}
+            disabled={isActive || kicking}
+            className="inline-flex items-center gap-1.5 rounded bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Start a read-only RealNex -> Postgres mirror sync"
+          >
+            {isActive ? 'Sync running…' : kicking ? 'Starting…' : 'Run sync'}
+          </button>
+        </div>
       </div>
 
       {kickErr && (
@@ -213,7 +236,7 @@ function RealnexSyncInner() {
               {job.errorMessage && <div className="mt-0.5 font-mono text-xs">{job.errorMessage}</div>}
               <button
                 type="button"
-                onClick={() => runSync(true)}
+                onClick={() => runSync({ force: true })}
                 disabled={kicking}
                 className="mt-2 rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
               >
