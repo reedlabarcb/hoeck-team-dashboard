@@ -200,10 +200,13 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
       sync_jobs: number;
     };
 
-    // Latest sync job (staleness/monitoring). None exists before the first sync.
+    // Latest sync job - full live counters so an in-flight sync is observable via the
+    // UNAUTHENTICATED /api/health (current_phase, api_calls, rate_limit_hits) with no
+    // session. rate_limit_hits is the concurrency tuning signal watched on the first sync.
     const jobResult = await db.execute(sql`
-      SELECT status::text AS status, completed_at,
-             companies_synced, contacts_synced, groups_synced, links_resolved
+      SELECT status::text AS status, current_phase, completed_at, started_at,
+             companies_synced, contacts_synced, groups_synced, links_resolved,
+             api_calls_made, rate_limit_hits
       FROM realnex_sync_jobs
       WHERE deleted_at IS NULL
       ORDER BY created_at DESC
@@ -212,20 +215,29 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
     const job = jobResult.rows[0] as
       | {
           status: string;
+          current_phase: string | null;
           completed_at: string | null;
+          started_at: string | null;
           companies_synced: number;
           contacts_synced: number;
           groups_synced: number;
           links_resolved: number;
+          api_calls_made: number;
+          rate_limit_hits: number;
         }
       | undefined;
 
-    const lastSync = job
-      ? `last sync: ${job.status}` +
-        (job.completed_at ? ` @ ${job.completed_at}` : '') +
-        ` (companies=${job.companies_synced} contacts=${job.contacts_synced} ` +
-        `groups=${job.groups_synced} links=${job.links_resolved})`
-      : 'no sync has run yet (empty-but-ready)';
+    const counters = job
+      ? `companies=${job.companies_synced} contacts=${job.contacts_synced} ` +
+        `groups=${job.groups_synced} links=${job.links_resolved} ` +
+        `api_calls=${job.api_calls_made} rate_limit_hits=${job.rate_limit_hits}`
+      : '';
+    const running = job?.status === 'queued' || job?.status === 'running';
+    const lastSync = !job
+      ? 'no sync has run yet (empty-but-ready)'
+      : running
+        ? `sync ${job.status} phase=${job.current_phase ?? '?'} ${counters}`
+        : `last sync: ${job.status}${job.completed_at ? ` @ ${job.completed_at}` : ''} (${counters})`;
 
     return {
       name: 'realnex_mirror',
@@ -240,6 +252,17 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
         groups: c.groups,
         syncJobs: c.sync_jobs,
         latestSyncStatus: job?.status ?? null,
+        latestSyncPhase: job?.current_phase ?? null,
+        latestSyncApiCalls: job?.api_calls_made ?? null,
+        latestSyncRateLimitHits: job?.rate_limit_hits ?? null,
+        latestSyncCounts: job
+          ? {
+              companies: job.companies_synced,
+              contacts: job.contacts_synced,
+              groups: job.groups_synced,
+              links: job.links_resolved,
+            }
+          : null,
       },
     };
   } catch (e) {
