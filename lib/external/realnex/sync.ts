@@ -3,16 +3,22 @@
  * wrapper (GET only) and writes to OUR mirror tables. Never writes to RealNex.
  *
  * Four phases (current_phase):
- *   1. companies — page /CrmOData/Companies ($skip/$top, raw array, length-terminated),
- *      UPSERT by realnex_key; company_name <- organizationId; compute normalized name.
- *   2. contacts  — page /CrmOData/Contacts the same way; UPSERT. company_key is NOT set
- *      here (left null / untouched); it is materialized in phase 4.
+ *   1. companies — page /CrmOData/Companies. The OData feed returns the envelope
+ *      { "@odata.context":..., "value":[...] } and does SERVER-DRIVEN paging (a page can be
+ *      smaller than the requested $top), so we advance $skip by the ACTUAL returned count and
+ *      stop on an empty page. UPSERT by realnex_key; company_name <- OrganizationId.
+ *   2. contacts  — page /CrmOData/Contacts the same way; UPSERT. company_key is NOT set here;
+ *      it is materialized in phase 4.
  *   3. groups    — listGroups() (PageNumber/PageSize) -> UPSERT realnex_groups.
  *   4. linking   — the inversion walk: for each company GET company/{key}/contacts and
- *      batch-write company_key + denormalized name onto those contacts. RealNex exposes
- *      no contact->company link on reads, so this is the only way. ~1,275 calls, run at
- *      bounded concurrency with backoff; a company that keeps failing is logged-and-skipped
- *      (its key recorded in job metadata), never aborting the whole sync.
+ *      batch-write company_key + denormalized name onto those contacts. RealNex exposes no
+ *      contact->company link on reads, so this is the only way. Run at bounded concurrency
+ *      with backoff; a company that keeps failing is logged-and-skipped (its key recorded in
+ *      job metadata), never aborting the whole sync.
+ *
+ * FIELD CASING: the /CrmOData/ feeds serialize PascalCase (Key, OrganizationId, WebSite, ...)
+ * while the /Crm/ endpoints serialize camelCase. lc() lowercases each item's keys so the row
+ * builders are case-insensitive to both (and to future changes). `raw` keeps the original.
  *
  * Idempotent: every write is UPSERT/UPDATE keyed by realnex_key, so re-running is safe.
  */
@@ -26,11 +32,9 @@ import { withRetry, mapLimit, resolveConcurrency, isRateLimit } from './retry';
 import type { RealNexCompanyListItem, RealNexContactListItem, RealNexGroup } from './types';
 import type { RealnexJobContext, RealnexProgress, RealnexSyncResult } from './job-runner';
 
-// RealNex OData feeds HARD-CAP $top at 100 (else HTTP 400 "The limit of '100' for Top query
-// has been exceeded"). The Crm PageNumber/PageSize endpoints (groups, inversion) have no
-// confirmed higher cap, so we conservatively page EVERYTHING at 100.
-const ODATA_PAGE = 100; // $top for the Companies/Contacts OData feeds (server max = 100)
-const CRM_PAGE = 100; // PageSize for the Crm endpoints (groups + inversion)
+const ODATA_PAGE = 100; // requested $top (server max = 100; it may return fewer per page)
+const CRM_PAGE = 100; // requested PageSize for the Crm endpoints (groups + inversion)
+const MAX_PAGES = 1000; // per-feed hard stop; infinite-loop guard (well above any real corpus)
 
 // ----- small coercion helpers (the API items are loosely typed) -----
 function str(v: unknown): string | null {
@@ -39,11 +43,25 @@ function str(v: unknown): string | null {
 function bool(v: unknown): boolean | null {
   return typeof v === 'boolean' ? v : null;
 }
-function tryDate(obj: unknown, keys: string[]): Date | null {
-  if (!obj || typeof obj !== 'object') return null;
-  const o = obj as Record<string, unknown>;
+
+/**
+ * Lowercase an object's top-level keys so field access is case-insensitive to RealNex's
+ * serializer (/CrmOData/ = PascalCase, /Crm/ = camelCase). Returns {} for non-objects.
+ * `raw` columns still store the untouched original.
+ */
+function lc(obj: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (obj && typeof obj === 'object') {
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) out[k.toLowerCase()] = v;
+  }
+  return out;
+}
+
+// tryDate reads keys off an ALREADY-lowercased object (pass lc(...)).
+const ACTIVITY_DATE_KEYS = ['date', 'eventdate', 'timestamp', 'occurredat', 'lastactivitydate'];
+function tryDate(lcObj: Record<string, unknown>, keys: string[]): Date | null {
   for (const k of keys) {
-    const v = o[k];
+    const v = lcObj[k];
     if (typeof v === 'string' && v) {
       const d = new Date(v);
       if (!Number.isNaN(d.getTime())) return d;
@@ -51,39 +69,40 @@ function tryDate(obj: unknown, keys: string[]): Date | null {
   }
   return null;
 }
-const ACTIVITY_DATE_KEYS = ['date', 'eventDate', 'timestamp', 'occurredAt', 'lastActivityDate'];
 
-// ----- row builders -----
+// ----- row builders (case-insensitive via lc) -----
 function companyRow(c: RealNexCompanyListItem, jobId: string) {
-  const addr = (c.address ?? null) as Record<string, unknown> | null;
-  const name = str(c.organizationId); // <- the company NAME lives in organizationId
+  const o = lc(c);
+  const addr = (o.address ?? null) as Record<string, unknown> | null;
+  const a = lc(addr); // address sub-fields are PascalCase too (City, State)
+  const name = str(o.organizationid); // <- the company NAME lives in OrganizationId
   return {
-    realnexKey: c.key as string,
+    realnexKey: typeof o.key === 'string' ? o.key : '',
     companyName: name,
     companyNameNormalized: normalizeCompanyName(name),
-    subsidiaryId: str(c.subsidiaryId),
-    investor: bool(c.investor),
-    tenant: bool(c.tenant),
-    agent: bool(c.agent),
-    vendor: bool(c.vendor),
-    personal: bool(c.personal),
-    prospect: bool(c.prospect),
-    phone: str(c.phone),
-    fax: str(c.fax),
-    email: str(c.email),
-    website: str(c.webSite),
-    doNotCall: bool(c.doNotCall),
-    doNotEmail: bool(c.doNotEmail),
-    doNotFax: bool(c.doNotFax),
-    doNotMail: bool(c.doNotMail),
+    subsidiaryId: str(o.subsidiaryid),
+    investor: bool(o.investor),
+    tenant: bool(o.tenant),
+    agent: bool(o.agent),
+    vendor: bool(o.vendor),
+    personal: bool(o.personal),
+    prospect: bool(o.prospect),
+    phone: str(o.phone),
+    fax: str(o.fax),
+    email: str(o.email),
+    website: str(o.website),
+    doNotCall: bool(o.donotcall),
+    doNotEmail: bool(o.donotemail),
+    doNotFax: bool(o.donotfax),
+    doNotMail: bool(o.donotmail),
     address: addr,
-    city: str(addr?.city),
-    state: str(addr?.state),
-    objectGroups: (c.objectGroups ?? []) as unknown[],
-    lastActivity: (c.lastActivity ?? null) as Record<string, unknown> | null,
-    lastActivityAt: tryDate(c.lastActivity, ACTIVITY_DATE_KEYS),
-    userKey: str(c.userKey),
-    teamKey: str(c.teamKey),
+    city: str(a.city),
+    state: str(a.state),
+    objectGroups: (o.objectgroups ?? []) as unknown[],
+    lastActivity: (o.lastactivity ?? null) as Record<string, unknown> | null,
+    lastActivityAt: tryDate(lc(o.lastactivity), ACTIVITY_DATE_KEYS),
+    userKey: str(o.userkey),
+    teamKey: str(o.teamkey),
     raw: c as Record<string, unknown>,
     lastSyncRunId: jobId,
   };
@@ -92,56 +111,61 @@ function companyRow(c: RealNexCompanyListItem, jobId: string) {
 function contactRow(c: RealNexContactListItem, jobId: string) {
   // company_key / company_name / company_name_normalized are MATERIALIZED by the linking
   // phase — deliberately absent here so re-syncs never clobber a resolved link with null.
+  const o = lc(c);
   return {
-    realnexKey: c.key as string,
-    fullName: str(c.fullName),
-    firstName: str(c.firstName),
-    lastName: str(c.lastName),
-    salutation: str(c.salutation),
-    greeting: str(c.greeting),
-    title: str(c.title),
-    investor: bool(c.investor),
-    tenant: bool(c.tenant),
-    agent: bool(c.agent),
-    vendor: bool(c.vendor),
-    personal: bool(c.personal),
-    prospect: bool(c.prospect),
-    work: str(c.work),
-    fax: str(c.fax),
-    mobile: str(c.mobile),
-    home: str(c.home),
-    email: str(c.email),
-    website: str(c.webSite),
-    doNotCall: bool(c.doNotCall),
-    doNotEmail: bool(c.doNotEmail),
-    doNotFax: bool(c.doNotFax),
-    doNotMail: bool(c.doNotMail),
-    address: (c.address ?? null) as Record<string, unknown> | null,
-    mailingAddress: (c.mailingAddress ?? null) as Record<string, unknown> | null,
-    objectGroups: (c.objectGroups ?? []) as unknown[],
-    lastActivity: (c.lastActivity ?? null) as Record<string, unknown> | null,
-    lastActivityAt: tryDate(c.lastActivity, ACTIVITY_DATE_KEYS),
-    userKey: str(c.userKey),
-    teamKey: str(c.teamKey),
+    realnexKey: typeof o.key === 'string' ? o.key : '',
+    fullName: str(o.fullname),
+    firstName: str(o.firstname),
+    lastName: str(o.lastname),
+    salutation: str(o.salutation),
+    greeting: str(o.greeting),
+    title: str(o.title),
+    investor: bool(o.investor),
+    tenant: bool(o.tenant),
+    agent: bool(o.agent),
+    vendor: bool(o.vendor),
+    personal: bool(o.personal),
+    prospect: bool(o.prospect),
+    work: str(o.work),
+    fax: str(o.fax),
+    mobile: str(o.mobile),
+    home: str(o.home),
+    email: str(o.email),
+    website: str(o.website),
+    doNotCall: bool(o.donotcall),
+    doNotEmail: bool(o.donotemail),
+    doNotFax: bool(o.donotfax),
+    doNotMail: bool(o.donotmail),
+    address: (o.address ?? null) as Record<string, unknown> | null,
+    mailingAddress: (o.mailingaddress ?? null) as Record<string, unknown> | null,
+    objectGroups: (o.objectgroups ?? []) as unknown[],
+    lastActivity: (o.lastactivity ?? null) as Record<string, unknown> | null,
+    lastActivityAt: tryDate(lc(o.lastactivity), ACTIVITY_DATE_KEYS),
+    userKey: str(o.userkey),
+    teamKey: str(o.teamkey),
     raw: c as Record<string, unknown>,
     lastSyncRunId: jobId,
   };
 }
 
 function groupRow(g: RealNexGroup, jobId: string) {
+  const o = lc(g);
   return {
-    realnexKey: g.key as string,
-    name: str(g.name),
+    realnexKey: typeof o.key === 'string' ? o.key : '',
+    name: str(o.name),
     raw: g as Record<string, unknown>,
     lastSyncRunId: jobId,
   };
 }
 
-// ----- UPSERT helpers (batch per page; dedupe within a page so ON CONFLICT can't hit the
-//        same row twice in one statement) -----
+// ----- UPSERT helpers (batch per page; dedupe within a page by the resolved realnex_key so
+//        ON CONFLICT can't hit the same row twice; drop items with no key) -----
 async function upsertCompanies(items: RealNexCompanyListItem[], jobId: string): Promise<void> {
   const byKey = new Map<string, ReturnType<typeof companyRow>>();
-  for (const c of items) if (typeof c.key === 'string' && c.key) byKey.set(c.key, companyRow(c, jobId));
+  for (const c of items) {
+    const row = companyRow(c, jobId);
+    if (row.realnexKey) byKey.set(row.realnexKey, row);
+  }
   const rows = [...byKey.values()];
   if (rows.length === 0) return;
   await db
@@ -186,7 +210,10 @@ async function upsertCompanies(items: RealNexCompanyListItem[], jobId: string): 
 
 async function upsertContacts(items: RealNexContactListItem[], jobId: string): Promise<void> {
   const byKey = new Map<string, ReturnType<typeof contactRow>>();
-  for (const c of items) if (typeof c.key === 'string' && c.key) byKey.set(c.key, contactRow(c, jobId));
+  for (const c of items) {
+    const row = contactRow(c, jobId);
+    if (row.realnexKey) byKey.set(row.realnexKey, row);
+  }
   const rows = [...byKey.values()];
   if (rows.length === 0) return;
   await db
@@ -237,7 +264,10 @@ async function upsertContacts(items: RealNexContactListItem[], jobId: string): P
 
 async function upsertGroups(items: RealNexGroup[], jobId: string): Promise<void> {
   const byKey = new Map<string, ReturnType<typeof groupRow>>();
-  for (const g of items) if (typeof g.key === 'string' && g.key) byKey.set(g.key, groupRow(g, jobId));
+  for (const g of items) {
+    const row = groupRow(g, jobId);
+    if (row.realnexKey) byKey.set(row.realnexKey, row);
+  }
   const rows = [...byKey.values()];
   if (rows.length === 0) return;
   await db
@@ -308,51 +338,53 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
 
   console.log(`[realnex-sync] start (concurrency=${concurrency}, odataPage=${ODATA_PAGE})`);
 
-  // ---- Phase 1: companies ----
+  // ---- Phase 1: companies (OData envelope, server-driven paging via $skip) ----
   counters.phase = 'companies';
-  for (let skip = 0; ; skip += ODATA_PAGE) {
+  let cSkip = 0;
+  for (let pageNo = 0; pageNo < MAX_PAGES; pageNo++) {
     const page = await withRetry(
       () => {
         counters.apiCalls += 1;
-        return listCompanies(skip, ODATA_PAGE);
+        return listCompanies(cSkip, ODATA_PAGE);
       },
       { onRetry },
     );
     if (page.length === 0) break;
-    if (skip === 0) console.log(`[realnex-sync] companies[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
+    if (pageNo === 0) console.log(`[realnex-sync] companies[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
     await upsertCompanies(page, ctx.jobId);
     counters.companiesSynced += page.length;
     await report();
-    if (page.length < ODATA_PAGE) break;
+    cSkip += page.length; // advance by ACTUAL count (server page may be < $top)
   }
   counters.totalCompanies = counters.companiesSynced;
   await report();
   console.log(`[realnex-sync] phase companies done: ${counters.companiesSynced}`);
 
-  // ---- Phase 2: contacts ----
+  // ---- Phase 2: contacts (same server-driven paging) ----
   counters.phase = 'contacts';
-  for (let skip = 0; ; skip += ODATA_PAGE) {
+  let ctSkip = 0;
+  for (let pageNo = 0; pageNo < MAX_PAGES; pageNo++) {
     const page = await withRetry(
       () => {
         counters.apiCalls += 1;
-        return listContacts(skip, ODATA_PAGE);
+        return listContacts(ctSkip, ODATA_PAGE);
       },
       { onRetry },
     );
     if (page.length === 0) break;
-    if (skip === 0) console.log(`[realnex-sync] contacts[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
+    if (pageNo === 0) console.log(`[realnex-sync] contacts[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
     await upsertContacts(page, ctx.jobId);
     counters.contactsSynced += page.length;
     await report();
-    if (page.length < ODATA_PAGE) break;
+    ctSkip += page.length;
   }
   counters.totalContacts = counters.contactsSynced;
   await report();
   console.log(`[realnex-sync] phase contacts done: ${counters.contactsSynced}`);
 
-  // ---- Phase 3: groups ----
+  // ---- Phase 3: groups (Crm PageNumber paging; stop on empty or once totalCount reached) ----
   counters.phase = 'groups';
-  for (let pageNumber = 1; ; pageNumber++) {
+  for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
     const gp = await withRetry(
       () => {
         counters.apiCalls += 1;
@@ -365,8 +397,8 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
     await upsertGroups(items, ctx.jobId);
     counters.groupsSynced += items.length;
     await report();
-    const total = gp.totalCount ?? counters.groupsSynced;
-    if (items.length < CRM_PAGE || counters.groupsSynced >= total) break;
+    const total = gp.totalCount ?? 0;
+    if (total > 0 && counters.groupsSynced >= total) break;
   }
   await report();
   console.log(`[realnex-sync] phase groups done: ${counters.groupsSynced}`);
@@ -386,7 +418,7 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
     try {
       // Page this company's contacts (usually a single page).
       const contactKeys: string[] = [];
-      for (let pageNumber = 1; ; pageNumber++) {
+      for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber++) {
         const resp = await withRetry(
           () => {
             counters.apiCalls += 1;
@@ -395,9 +427,13 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
           { onRetry },
         );
         const items = resp.items ?? [];
-        for (const it of items) if (typeof it.key === 'string' && it.key) contactKeys.push(it.key);
-        const total = resp.totalCount ?? contactKeys.length;
-        if (items.length < CRM_PAGE || contactKeys.length >= total) break;
+        if (items.length === 0) break;
+        for (const it of items) {
+          const k = lc(it).key;
+          if (typeof k === 'string' && k) contactKeys.push(k);
+        }
+        const total = resp.totalCount ?? 0;
+        if (total > 0 && contactKeys.length >= total) break;
       }
       if (contactKeys.length > 0) {
         counters.linksResolved += await linkContacts(contactKeys, co.key, co.name, co.norm, ctx.jobId);
