@@ -15,6 +15,38 @@ before push, pre-commit must pass, never commit on red.**
 
 ---
 
+## Scope decision (2026-07-07): note-logging is the headline write feature
+
+Reed's core use of the dashboard is **logging a history note onto a contact or company**
+(e.g. "had lunch with Maria, her daughter's going to Berkeley"). How it's built:
+
+- **LOCAL-FIRST STRUCTURED ENTRY - no LLM, no external text exposure.** Flow:
+  1. **Local autocomplete** resolves the contact/company against the synced mirror - instant, no
+     network. This is the **highest-consequence step**: resolving the right person locally prevents
+     logging a note to the WRONG contact.
+  2. **Event-type pick** (Note / Meeting / Call / Email).
+  3. **Verbatim note body** (typed as-is; never sent anywhere external).
+  4. **Confirm-before-write, every time.**
+  Works for both **contacts AND companies**. Fits Reed's actual usage (mostly one-contact-one-note),
+  sidesteps the Anthropic/DLP question entirely, and never guesses who the contact is.
+- **This is a WRITE to RealNex** - a CREATE of a History/Activity **appended to an existing** record
+  (`appendActivity` -> `POST /api/v1/Crm/object/{key}/history`). It is the **ALLOWED append** (create
+  of a child object), **NOT an edit** of the parent - consistent with the write-safety model below.
+  Reconfirm this when P3.6 adds the create methods.
+- **PRIORITY: the create-History path (P3.6 create methods + P3.9 log-note form) is the #1 write
+  feature** - "the whole point of the dashboard" per Reed. **P3.5 read UIs are secondary** (useful for
+  browsing + as the autocomplete source), but note-logging is the headline. Sequencing may bring the
+  P3.6/P3.9 write path forward relative to the strict top-to-bottom order below - to be planned after
+  the first cron run is verified.
+- **Autocomplete source = the local mirror** (already synced by P3.4), so **P3.5's contact/company
+  data feeds the note-logging autocomplete** - a dependency to keep when sequencing.
+- **P3.10 conversational LLM parser stays DEFERRED** - not needed for Reed's single-note-at-a-time
+  usage (not multi-entity brain-dumps). No `ANTHROPIC_API_KEY`, no external-text exposure. MEMORY's
+  "Anthropic dropped" decision remains authoritative. Revisit only if multi-entity freeform logging
+  becomes a real need.
+
+---
+
 ## RealNex Write Safety — Enforced in Code
 
 **This is the non-negotiable core of Phase 3. Read it before touching any RealNex code.**
@@ -179,6 +211,9 @@ Dependency order is strict top-to-bottom. **No write capability exists in the co
 - **Builds:** list pages reading the **mirror** (fast), search/filter, React Query 60s polling +
   refetch-on-focus, `<LastUpdated />`, refresh button, `<ConnectRealNexBanner />` if `REALNEX_API_KEY`
   missing. **Read-only — no create yet.**
+- **Dependency (2026-07-07):** this mirror-read + search plumbing is the **autocomplete source for
+  P3.9 note-logging** (the priority write feature) - the contact/company resolver reads P3.5's data.
+  P3.5 is **secondary in priority** to the note-logging write path, but they share the mirror-read layer.
 - **Review gate:** lists render from mirror, search/filter work, freshness indicators present, deep-link/back work.
 - **Tests:** route + component.
 
@@ -213,7 +248,7 @@ Dependency order is strict top-to-bottom. **No write capability exists in the co
   chain-to-W1 works.
 - **Tests:** cascade logic, group dropdown source, route.
 
-### P3.9 — Append History (structured form) — the ALLOWED child-append
+### P3.9 — Log History note (LOCAL-FIRST structured entry, no LLM) — the ALLOWED child-append — PRIORITY write feature (see "Scope decision", top)
 - **Builds:** structured "Log Activity" form — Event Type dropdown from lookups
   (Note/Phone Call/Cold Call/Email/Meeting/Other), resolve the parent object key (company/contact)
   first, `appendActivity`. Two-entry activity-feed log. **No field edits to the parent — append only.**
