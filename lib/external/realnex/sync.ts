@@ -319,6 +319,7 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
       { onRetry },
     );
     if (page.length === 0) break;
+    if (skip === 0) console.log(`[realnex-sync] companies[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
     await upsertCompanies(page, ctx.jobId);
     counters.companiesSynced += page.length;
     await report();
@@ -339,6 +340,7 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
       { onRetry },
     );
     if (page.length === 0) break;
+    if (skip === 0) console.log(`[realnex-sync] contacts[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
     await upsertContacts(page, ctx.jobId);
     counters.contactsSynced += page.length;
     await report();

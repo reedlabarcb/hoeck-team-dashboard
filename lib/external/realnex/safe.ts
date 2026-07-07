@@ -60,6 +60,25 @@ import type {
 
 const enc = encodeURIComponent;
 
+/**
+ * Extract the row array from a RealNex OData response. The CrmOData feeds are ASP.NET Core
+ * OData ([EnableQuery]) endpoints returning the standard envelope
+ * { "@odata.context": ..., "value": [...] } - NOT a raw array (that wrong assumption cost a
+ * sync run: "TypeError: e is not iterable"). Accept a raw array too, and LOUDLY log any other
+ * shape instead of silently syncing nothing.
+ */
+function odataArray<T>(raw: unknown): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (raw && typeof raw === 'object') {
+    const v = (raw as { value?: unknown }).value;
+    if (Array.isArray(v)) return v as T[];
+    console.warn(
+      `[realnex] unexpected OData response shape (keys: ${Object.keys(raw as object).join(', ') || 'none'}); treating as empty`,
+    );
+  }
+  return [];
+}
+
 // ----- Identity -----
 
 /** GET /api/Client — the authed user/account (used by /api/health + connectivity probe). */
@@ -121,26 +140,28 @@ export function getObjectHistory(objectKey: string, paging: RealNexPaging = {}):
 
 /**
  * GET /api/v1/CrmOData/Companies — one OData page of companies (READ-ONLY).
- * Returns a RAW ARRAY (no {value} envelope, no @odata.count, no nextLink): page
- * with $skip/$top and stop when a page returns fewer than $top rows. RealNex HARD-CAPS
+ * Response is the OData ENVELOPE { "@odata.context": ..., "value": [...] } (ASP.NET OData);
+ * odataArray() pulls the `value` array. Page with $skip/$top, stop under a full page. RealNex HARD-CAPS
  * $top at 100 (HTTP 400 "The limit of '100' for Top query has been exceeded" above that),
  * so top defaults to 100. The company NAME is each item's `organizationId` (see
  * realnex-companies.ts gotcha).
  */
-export function listCompanies(skip = 0, top = 100): Promise<RealNexCompanyListItem[]> {
-  return realnexGet<RealNexCompanyListItem[]>('/api/v1/CrmOData/Companies', {
+export async function listCompanies(skip = 0, top = 100): Promise<RealNexCompanyListItem[]> {
+  const raw = await realnexGet<unknown>('/api/v1/CrmOData/Companies', {
     query: { '$skip': skip, '$top': top },
   });
+  return odataArray<RealNexCompanyListItem>(raw);
 }
 
 /**
  * GET /api/v1/CrmOData/Contacts — one OData page of contacts (READ-ONLY).
- * Same raw-array $skip/$top paging as listCompanies.
+ * Same OData {value:[...]} envelope + $skip/$top paging as listCompanies.
  */
-export function listContacts(skip = 0, top = 100): Promise<RealNexContactListItem[]> {
-  return realnexGet<RealNexContactListItem[]>('/api/v1/CrmOData/Contacts', {
+export async function listContacts(skip = 0, top = 100): Promise<RealNexContactListItem[]> {
+  const raw = await realnexGet<unknown>('/api/v1/CrmOData/Contacts', {
     query: { '$skip': skip, '$top': top },
   });
+  return odataArray<RealNexContactListItem>(raw);
 }
 
 /**

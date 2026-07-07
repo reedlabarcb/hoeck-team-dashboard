@@ -129,9 +129,9 @@ export interface RealNexPaging {
 
 // ---------------------------------------------------------------------------
 // OData list-item shapes (P3.4 mirror sync). The feeds GET /api/v1/CrmOData/
-// Companies and /Contacts return RAW ARRAYS of these items — no {value:[]}
-// envelope, no @odata.count, no nextLink. Page with $skip/$top and stop when a
-// page returns fewer than $top rows.
+// Companies and /Contacts are ASP.NET Core OData endpoints: the response is the
+// envelope { "@odata.context": ..., "value": [...] } (NOT a raw array). safe.ts
+// odataArray() pulls `value`. Page with $skip/$top, stop under a full page ($top max 100).
 //
 // !!! GOTCHA: CompanyListItem has NO `name` field. The company name lives in
 // `organizationId` (typed String, despite the Id suffix). See realnex-companies.ts.
