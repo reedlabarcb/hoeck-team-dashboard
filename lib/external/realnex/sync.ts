@@ -354,7 +354,6 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
       { onRetry },
     );
     if (page.length === 0) break;
-    if (pageNo === 0) console.log(`[realnex-sync] companies[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
     await upsertCompanies(page, ctx.jobId);
     counters.companiesSynced += page.length;
     await report();
@@ -376,7 +375,6 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
       { onRetry },
     );
     if (page.length === 0) break;
-    if (pageNo === 0) console.log(`[realnex-sync] contacts[0] field keys: ${Object.keys((page[0] ?? {}) as object).join(',')}`);
     await upsertContacts(page, ctx.jobId);
     counters.contactsSynced += page.length;
     await report();
@@ -419,8 +417,6 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
     .from(realnexCompanies)
     .where(isNull(realnexCompanies.deletedAt));
 
-  let invLogged = false;
-  let linkLogged = false;
   await mapLimit(companies, concurrency, async (co) => {
     try {
       // Page this company's contacts (usually a single page).
@@ -435,13 +431,6 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
         );
         const r = lc(resp); // envelope may be camelCase (items) or PascalCase (Items)
         const items = (Array.isArray(r.items) ? r.items : []) as RealNexContactListItem[];
-        if (!invLogged) {
-          invLogged = true;
-          console.log(
-            `[realnex-sync] inversion first resp (co ${co.key}): envelopeKeys=${Object.keys(r).join(',')} ` +
-              `items=${items.length} item0=${items.length ? Object.keys(lc(items[0])).join(',') : 'none'}`,
-          );
-        }
         if (items.length === 0) break;
         for (const it of items) {
           const k = lc(it).key;
@@ -451,14 +440,7 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
         if (total > 0 && contactKeys.length >= total) break;
       }
       if (contactKeys.length > 0) {
-        const n = await linkContacts(contactKeys, co.key, co.name, co.norm, ctx.jobId);
-        counters.linksResolved += n;
-        if (!linkLogged) {
-          linkLogged = true;
-          console.log(
-            `[realnex-sync] inversion first-with-contacts (co ${co.key}): keys=${contactKeys.length} updated=${n} sampleKey=${contactKeys[0]}`,
-          );
-        }
+        counters.linksResolved += await linkContacts(contactKeys, co.key, co.name, co.norm, ctx.jobId);
       }
     } catch (err) {
       // Log-and-skip: a company whose inversion keeps failing is recorded, never fatal.

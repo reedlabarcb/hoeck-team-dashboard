@@ -202,10 +202,9 @@ function RealnexSyncInner() {
 
           {job.status === 'completed' && (
             <div className="mt-4 rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
-              Sync completed.{' '}
-              {skippedCount > 0
-                ? `${fmtInt(skippedCount)} company(ies) were skipped after retries (recorded in job metadata) — re-run to retry them.`
-                : 'All companies linked cleanly.'}
+              Sync completed. {fmtInt(job.linksResolved)} contacts linked to companies.
+              {skippedCount > 0 &&
+                ` ${fmtInt(skippedCount)} company(ies) skipped after retries (recorded in job metadata) - re-run to retry them.`}
             </div>
           )}
           {job.status === 'failed' && (
