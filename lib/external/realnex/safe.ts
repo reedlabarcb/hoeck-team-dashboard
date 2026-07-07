@@ -122,10 +122,12 @@ export function getObjectHistory(objectKey: string, paging: RealNexPaging = {}):
 /**
  * GET /api/v1/CrmOData/Companies — one OData page of companies (READ-ONLY).
  * Returns a RAW ARRAY (no {value} envelope, no @odata.count, no nextLink): page
- * with $skip/$top and stop when a page returns fewer than $top rows. The company
- * NAME is each item's `organizationId` (see realnex-companies.ts gotcha).
+ * with $skip/$top and stop when a page returns fewer than $top rows. RealNex HARD-CAPS
+ * $top at 100 (HTTP 400 "The limit of '100' for Top query has been exceeded" above that),
+ * so top defaults to 100. The company NAME is each item's `organizationId` (see
+ * realnex-companies.ts gotcha).
  */
-export function listCompanies(skip = 0, top = 500): Promise<RealNexCompanyListItem[]> {
+export function listCompanies(skip = 0, top = 100): Promise<RealNexCompanyListItem[]> {
   return realnexGet<RealNexCompanyListItem[]>('/api/v1/CrmOData/Companies', {
     query: { '$skip': skip, '$top': top },
   });
@@ -135,7 +137,7 @@ export function listCompanies(skip = 0, top = 500): Promise<RealNexCompanyListIt
  * GET /api/v1/CrmOData/Contacts — one OData page of contacts (READ-ONLY).
  * Same raw-array $skip/$top paging as listCompanies.
  */
-export function listContacts(skip = 0, top = 500): Promise<RealNexContactListItem[]> {
+export function listContacts(skip = 0, top = 100): Promise<RealNexContactListItem[]> {
   return realnexGet<RealNexContactListItem[]>('/api/v1/CrmOData/Contacts', {
     query: { '$skip': skip, '$top': top },
   });

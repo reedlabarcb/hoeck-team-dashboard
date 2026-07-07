@@ -26,8 +26,11 @@ import { withRetry, mapLimit, resolveConcurrency, isRateLimit } from './retry';
 import type { RealNexCompanyListItem, RealNexContactListItem, RealNexGroup } from './types';
 import type { RealnexJobContext, RealnexProgress, RealnexSyncResult } from './job-runner';
 
-const ODATA_PAGE = 500; // $top for the Companies/Contacts feeds
-const COMPANY_CONTACTS_PAGE = 200; // PageSize for the inversion endpoint
+// RealNex OData feeds HARD-CAP $top at 100 (else HTTP 400 "The limit of '100' for Top query
+// has been exceeded"). The Crm PageNumber/PageSize endpoints (groups, inversion) have no
+// confirmed higher cap, so we conservatively page EVERYTHING at 100.
+const ODATA_PAGE = 100; // $top for the Companies/Contacts OData feeds (server max = 100)
+const CRM_PAGE = 100; // PageSize for the Crm endpoints (groups + inversion)
 
 // ----- small coercion helpers (the API items are loosely typed) -----
 function str(v: unknown): string | null {
@@ -351,7 +354,7 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
     const gp = await withRetry(
       () => {
         counters.apiCalls += 1;
-        return listGroups({ pageNumber, pageSize: 200 });
+        return listGroups({ pageNumber, pageSize: CRM_PAGE });
       },
       { onRetry },
     );
@@ -361,7 +364,7 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
     counters.groupsSynced += items.length;
     await report();
     const total = gp.totalCount ?? counters.groupsSynced;
-    if (items.length < 200 || counters.groupsSynced >= total) break;
+    if (items.length < CRM_PAGE || counters.groupsSynced >= total) break;
   }
   await report();
   console.log(`[realnex-sync] phase groups done: ${counters.groupsSynced}`);
@@ -385,14 +388,14 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
         const resp = await withRetry(
           () => {
             counters.apiCalls += 1;
-            return getCompanyContacts(co.key, { pageNumber, pageSize: COMPANY_CONTACTS_PAGE });
+            return getCompanyContacts(co.key, { pageNumber, pageSize: CRM_PAGE });
           },
           { onRetry },
         );
         const items = resp.items ?? [];
         for (const it of items) if (typeof it.key === 'string' && it.key) contactKeys.push(it.key);
         const total = resp.totalCount ?? contactKeys.length;
-        if (items.length < COMPANY_CONTACTS_PAGE || contactKeys.length >= total) break;
+        if (items.length < CRM_PAGE || contactKeys.length >= total) break;
       }
       if (contactKeys.length > 0) {
         counters.linksResolved += await linkContacts(contactKeys, co.key, co.name, co.norm, ctx.jobId);
