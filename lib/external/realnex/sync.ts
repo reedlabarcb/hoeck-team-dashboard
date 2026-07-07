@@ -392,12 +392,13 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
       },
       { onRetry },
     );
-    const items = gp.items ?? [];
+    const g = lc(gp);
+    const items = (Array.isArray(g.items) ? g.items : []) as RealNexGroup[];
     if (items.length === 0) break;
     await upsertGroups(items, ctx.jobId);
     counters.groupsSynced += items.length;
     await report();
-    const total = gp.totalCount ?? 0;
+    const total = typeof g.totalcount === 'number' ? g.totalcount : 0;
     if (total > 0 && counters.groupsSynced >= total) break;
   }
   await report();
@@ -414,6 +415,8 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
     .from(realnexCompanies)
     .where(isNull(realnexCompanies.deletedAt));
 
+  let invLogged = false;
+  let linkLogged = false;
   await mapLimit(companies, concurrency, async (co) => {
     try {
       // Page this company's contacts (usually a single page).
@@ -426,17 +429,32 @@ export async function runRealnexSync(opts: { jobContext: RealnexJobContext }): P
           },
           { onRetry },
         );
-        const items = resp.items ?? [];
+        const r = lc(resp); // envelope may be camelCase (items) or PascalCase (Items)
+        const items = (Array.isArray(r.items) ? r.items : []) as RealNexContactListItem[];
+        if (!invLogged) {
+          invLogged = true;
+          console.log(
+            `[realnex-sync] inversion first resp (co ${co.key}): envelopeKeys=${Object.keys(r).join(',')} ` +
+              `items=${items.length} item0=${items.length ? Object.keys(lc(items[0])).join(',') : 'none'}`,
+          );
+        }
         if (items.length === 0) break;
         for (const it of items) {
           const k = lc(it).key;
           if (typeof k === 'string' && k) contactKeys.push(k);
         }
-        const total = resp.totalCount ?? 0;
+        const total = typeof r.totalcount === 'number' ? r.totalcount : 0;
         if (total > 0 && contactKeys.length >= total) break;
       }
       if (contactKeys.length > 0) {
-        counters.linksResolved += await linkContacts(contactKeys, co.key, co.name, co.norm, ctx.jobId);
+        const n = await linkContacts(contactKeys, co.key, co.name, co.norm, ctx.jobId);
+        counters.linksResolved += n;
+        if (!linkLogged) {
+          linkLogged = true;
+          console.log(
+            `[realnex-sync] inversion first-with-contacts (co ${co.key}): keys=${contactKeys.length} updated=${n} sampleKey=${contactKeys[0]}`,
+          );
+        }
       }
     } catch (err) {
       // Log-and-skip: a company whose inversion keeps failing is recorded, never fatal.
