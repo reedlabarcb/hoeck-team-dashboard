@@ -6,7 +6,12 @@ builder = "nixpacks"
 # where postgres.railway.internal resolves. This sidesteps corp firewall blocks on
 # the public TCP proxy port (see docs/LESSONS_LEARNED.md "CBRE corp network").
 # Seed is idempotent (ON CONFLICT DO NOTHING) — inbound-tracker 0fdcb2f lesson.
-startCommand = "npm run db:migrate && npm run seed:users && npm start"
+# Start command is a dispatcher branching on $SERVICE_ROLE so one repo backs the web service
+# AND the cron services. Unset/"web" (the web service sets no SERVICE_ROLE) reproduces the
+# historical web command EXACTLY: `npm run db:migrate && npm run seed:users && npm start`.
+# Cron services set SERVICE_ROLE=realnex|box-incremental|box-full. See scripts/start-dispatch.sh
+# + docs/LESSONS_LEARNED.md "Railway cron".
+startCommand = "sh scripts/start-dispatch.sh"
 healthcheckPath = "/api/health"
 restartPolicyType = "on_failure"
 
