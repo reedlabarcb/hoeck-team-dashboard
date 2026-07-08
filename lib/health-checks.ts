@@ -192,7 +192,8 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
         (SELECT count(*) FROM realnex_contacts  WHERE deleted_at IS NULL)::int AS contacts,
         (SELECT count(*) FROM realnex_contacts  WHERE deleted_at IS NULL AND company_key IS NOT NULL)::int AS contacts_linked,
         (SELECT count(*) FROM realnex_groups    WHERE deleted_at IS NULL)::int AS groups,
-        (SELECT count(*) FROM realnex_sync_jobs)::int                          AS sync_jobs
+        (SELECT count(*) FROM realnex_sync_jobs)::int                          AS sync_jobs,
+        (SELECT count(*) FROM realnex_sync_jobs WHERE triggered_by = 'cron')::int AS sync_jobs_cron
     `);
     const c = (countResult.rows[0] ?? {}) as {
       companies: number;
@@ -200,13 +201,14 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
       contacts_linked: number;
       groups: number;
       sync_jobs: number;
+      sync_jobs_cron: number;
     };
 
     // Latest sync job - full live counters so an in-flight sync is observable via the
     // UNAUTHENTICATED /api/health (current_phase, api_calls, rate_limit_hits) with no
     // session. rate_limit_hits is the concurrency tuning signal watched on the first sync.
     const jobResult = await db.execute(sql`
-      SELECT status::text AS status, current_phase, completed_at, started_at,
+      SELECT status::text AS status, current_phase, completed_at, started_at, triggered_by,
              companies_synced, contacts_synced, groups_synced, links_resolved,
              api_calls_made, rate_limit_hits
       FROM realnex_sync_jobs
@@ -220,6 +222,7 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
           current_phase: string | null;
           completed_at: string | null;
           started_at: string | null;
+          triggered_by: string;
           companies_synced: number;
           contacts_synced: number;
           groups_synced: number;
@@ -238,15 +241,15 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
     const lastSync = !job
       ? 'no sync has run yet (empty-but-ready)'
       : running
-        ? `sync ${job.status} phase=${job.current_phase ?? '?'} ${counters}`
-        : `last sync: ${job.status}${job.completed_at ? ` @ ${job.completed_at}` : ''} (${counters})`;
+        ? `sync ${job.status} phase=${job.current_phase ?? '?'} by '${job.triggered_by}' ${counters}`
+        : `last sync: ${job.status}${job.completed_at ? ` @ ${job.completed_at}` : ''} by '${job.triggered_by}' (${counters})`;
 
     return {
       name: 'realnex_mirror',
       status: job?.status === 'failed' ? 'warn' : 'ok',
       detail:
         `tables present; rows: companies=${c.companies} contacts=${c.contacts} ` +
-        `(linked=${c.contacts_linked}) groups=${c.groups} sync_jobs=${c.sync_jobs}. ${lastSync}`,
+        `(linked=${c.contacts_linked}) groups=${c.groups} sync_jobs=${c.sync_jobs} (cron=${c.sync_jobs_cron}). ${lastSync}`,
       metadata: {
         tablesPresent: true,
         contactsLinked: c.contacts_linked,
@@ -254,7 +257,9 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
         contacts: c.contacts,
         groups: c.groups,
         syncJobs: c.sync_jobs,
+        syncJobsCron: c.sync_jobs_cron,
         latestSyncStatus: job?.status ?? null,
+        latestSyncTriggeredBy: job?.triggered_by ?? null,
         latestSyncPhase: job?.current_phase ?? null,
         latestSyncApiCalls: job?.api_calls_made ?? null,
         latestSyncRateLimitHits: job?.rate_limit_hits ?? null,
