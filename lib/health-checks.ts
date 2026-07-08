@@ -278,6 +278,121 @@ export async function checkRealNexMirror(): Promise<CheckResult> {
   }
 }
 
+/**
+ * Phase 2 — Box folder-index freshness + walk history (added 2026-07-08).
+ *
+ * WHY THIS EXISTS: the nightly/weekly Box walks are driven by Railway crons that were
+ * configured with the invalid `[[deploy.cronJobs]]` array syntax — a format Railway
+ * silently ignores (it only runs a single `deploy.cronSchedule` per service). So NO
+ * Box walk has fired autonomously since the 2026-06-01 re-enable, and there was no
+ * freshness monitor here to notice — the index went stale invisibly for weeks.
+ * This check closes that observability gap (mirrors checkRealNexMirror) and doubles
+ * as the corp-network-safe way to read box_sync_jobs (psql/ssh/`railway run` to the
+ * DB are all firewall-blocked; /api/health reaches the DB via internal networking).
+ * See docs/LESSONS_LEARNED.md "Railway cron: [[deploy.cronJobs]] silently ignored".
+ *
+ * Status policy:
+ *   - fail if either box table is missing
+ *   - warn if there is no completed folder walk, OR the last successful walk completed
+ *     more than 48h ago (a daily incremental should touch the index within 24h once
+ *     the cron actually runs) — this is the staleness alarm that was missing
+ *   - ok   otherwise
+ */
+export async function checkBoxMirror(): Promise<CheckResult> {
+  if (!process.env.DATABASE_URL) {
+    return { name: 'box_mirror', status: 'not_configured', detail: 'DATABASE_URL not set' };
+  }
+  try {
+    // Existence first — a count on a missing table would abort the whole query.
+    const existsResult = await db.execute(sql`
+      SELECT
+        to_regclass('public.box_folder_index') IS NOT NULL AS "box_folder_index",
+        to_regclass('public.box_sync_jobs')    IS NOT NULL AS "box_sync_jobs"
+    `);
+    const ex = (existsResult.rows[0] ?? {}) as Record<string, boolean>;
+    const missing = (['box_folder_index', 'box_sync_jobs'] as const).filter((t) => !ex[t]);
+    if (missing.length > 0) {
+      return { name: 'box_mirror', status: 'fail', detail: `missing tables: ${missing.join(', ')}`, metadata: { missing } };
+    }
+
+    // Index size + last-touched.
+    const idxResult = await db.execute(sql`
+      SELECT count(*)::int AS items, max(last_seen_at) AS last_seen_at
+      FROM box_folder_index
+      WHERE deleted_at IS NULL
+    `);
+    const idx = (idxResult.rows[0] ?? {}) as { items: number; last_seen_at: string | null };
+
+    // Folder-walk job aggregates — including whether a cron EVER triggered one.
+    const aggResult = await db.execute(sql`
+      SELECT
+        count(*) FILTER (WHERE job_type = 'folder_walk')::int                           AS walk_jobs,
+        count(*) FILTER (WHERE job_type = 'folder_walk' AND triggered_by = 'cron')::int AS walk_jobs_cron,
+        count(*) FILTER (WHERE job_type = 'folder_walk' AND status = 'completed')::int   AS walk_jobs_completed
+      FROM box_sync_jobs
+      WHERE deleted_at IS NULL
+    `);
+    const agg = (aggResult.rows[0] ?? {}) as { walk_jobs: number; walk_jobs_cron: number; walk_jobs_completed: number };
+
+    // The last SUCCESSFUL folder walk — the true index-freshness anchor.
+    const lastWalkResult = await db.execute(sql`
+      SELECT completed_at, triggered_by, sync_mode::text AS sync_mode, progress_files_indexed
+      FROM box_sync_jobs
+      WHERE deleted_at IS NULL AND job_type = 'folder_walk' AND status = 'completed'
+      ORDER BY completed_at DESC NULLS LAST
+      LIMIT 1
+    `);
+    const lw = lastWalkResult.rows[0] as
+      | { completed_at: string | null; triggered_by: string; sync_mode: string; progress_files_indexed: number }
+      | undefined;
+
+    // Who has ever triggered a folder walk (confirms "never cron").
+    const bySourceResult = await db.execute(sql`
+      SELECT triggered_by, count(*)::int AS n
+      FROM box_sync_jobs
+      WHERE deleted_at IS NULL AND job_type = 'folder_walk'
+      GROUP BY triggered_by
+      ORDER BY n DESC
+    `);
+    const bySource = (bySourceResult.rows as { triggered_by: string; n: number }[])
+      .map((r) => `${r.triggered_by}=${r.n}`)
+      .join(', ');
+
+    const lastWalkMs = lw?.completed_at ? Date.now() - new Date(lw.completed_at).getTime() : null;
+    const stale = lastWalkMs === null || lastWalkMs > 48 * 3600 * 1000;
+    const staleHours = lastWalkMs !== null ? Math.round(lastWalkMs / 3600000) : null;
+
+    const lastWalk = lw?.completed_at
+      ? `last successful walk: ${lw.completed_at} by '${lw.triggered_by}' ` +
+        `(mode=${lw.sync_mode}, files_indexed=${lw.progress_files_indexed}, ~${staleHours}h ago)`
+      : 'NO completed folder walk on record';
+
+    return {
+      name: 'box_mirror',
+      status: agg.walk_jobs_completed === 0 || stale ? 'warn' : 'ok',
+      detail:
+        `box_folder_index: ${idx.items} items (last touched ${idx.last_seen_at ?? 'never'}). ` +
+        `folder_walk jobs: total=${agg.walk_jobs} cron=${agg.walk_jobs_cron} completed=${agg.walk_jobs_completed} ` +
+        `[${bySource || 'none'}]. ${lastWalk}`,
+      metadata: {
+        indexItems: idx.items,
+        indexLastSeenAt: idx.last_seen_at,
+        walkJobsTotal: agg.walk_jobs,
+        walkJobsCron: agg.walk_jobs_cron,
+        walkJobsCompleted: agg.walk_jobs_completed,
+        lastSuccessfulWalkAt: lw?.completed_at ?? null,
+        lastSuccessfulWalkBy: lw?.triggered_by ?? null,
+        lastSuccessfulWalkMode: lw?.sync_mode ?? null,
+        staleHours,
+        triggeredByBreakdown: bySource,
+      },
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { name: 'box_mirror', status: 'fail', detail: `query failed: ${msg.slice(0, 240)}` };
+  }
+}
+
 export async function checkBox(): Promise<CheckResult> {
   if (!process.env.BOX_ACCESS_TOKEN) {
     return {
@@ -501,6 +616,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
     checkPostgres(),
     checkRealNex(),
     checkRealNexMirror(),
+    checkBoxMirror(),
     checkBox(),
     checkBoxRootFolder(),
     checkMasterExcelFile(),
