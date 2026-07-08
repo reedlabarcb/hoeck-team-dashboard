@@ -358,6 +358,36 @@ export async function checkBoxMirror(): Promise<CheckResult> {
       .map((r) => `${r.triggered_by}=${r.n}`)
       .join(', ');
 
+    // Latest folder_walk job of ANY status — so a RUNNING walk's live progress and a
+    // FAILED walk's error surface on the UNAUTHENTICATED /api/health (mirrors
+    // checkRealNexMirror). This is how a manually-kicked full walk is watched when the
+    // authenticated /api/box/sync/status endpoint isn't reachable (no session cookie).
+    const latestJobResult = await db.execute(sql`
+      SELECT status::text AS status, started_at, completed_at, error_message, triggered_by,
+             sync_mode::text AS sync_mode, progress_folders_walked, progress_files_indexed,
+             api_calls_made, current_path
+      FROM box_sync_jobs
+      WHERE deleted_at IS NULL AND job_type = 'folder_walk'
+      ORDER BY started_at DESC
+      LIMIT 1
+    `);
+    const lj = latestJobResult.rows[0] as
+      | {
+          status: string;
+          started_at: string | null;
+          completed_at: string | null;
+          error_message: string | null;
+          triggered_by: string;
+          sync_mode: string;
+          progress_folders_walked: number;
+          progress_files_indexed: number;
+          api_calls_made: number;
+          current_path: string | null;
+        }
+      | undefined;
+    const running = lj?.status === 'queued' || lj?.status === 'running';
+    const latestFailed = lj?.status === 'failed';
+
     const lastWalkMs = lw?.completed_at ? Date.now() - new Date(lw.completed_at).getTime() : null;
     const stale = lastWalkMs === null || lastWalkMs > 48 * 3600 * 1000;
     const staleHours = lastWalkMs !== null ? Math.round(lastWalkMs / 3600000) : null;
@@ -367,11 +397,19 @@ export async function checkBoxMirror(): Promise<CheckResult> {
         `(mode=${lw.sync_mode}, files_indexed=${lw.progress_files_indexed}, ~${staleHours}h ago)`
       : 'NO completed folder walk on record';
 
+    const liveLine = running
+      ? `WALK ${lj!.status} NOW (mode=${lj!.sync_mode}, folders=${lj!.progress_folders_walked}, ` +
+        `files=${lj!.progress_files_indexed}, api=${lj!.api_calls_made}, by '${lj!.triggered_by}'` +
+        `${lj!.current_path ? `, at ${lj!.current_path}` : ''}). `
+      : latestFailed
+        ? `LATEST WALK FAILED: ${lj?.error_message?.slice(0, 160) ?? 'unknown'}. `
+        : '';
+
     return {
       name: 'box_mirror',
-      status: agg.walk_jobs_completed === 0 || stale ? 'warn' : 'ok',
+      status: latestFailed || agg.walk_jobs_completed === 0 || stale ? 'warn' : 'ok',
       detail:
-        `box_folder_index: ${idx.items} items (last touched ${idx.last_seen_at ?? 'never'}). ` +
+        `${liveLine}box_folder_index: ${idx.items} items (last touched ${idx.last_seen_at ?? 'never'}). ` +
         `folder_walk jobs: total=${agg.walk_jobs} cron=${agg.walk_jobs_cron} completed=${agg.walk_jobs_completed} ` +
         `[${bySource || 'none'}]. ${lastWalk}`,
       metadata: {
@@ -385,6 +423,13 @@ export async function checkBoxMirror(): Promise<CheckResult> {
         lastSuccessfulWalkMode: lw?.sync_mode ?? null,
         staleHours,
         triggeredByBreakdown: bySource,
+        latestJobStatus: lj?.status ?? null,
+        latestJobStartedAt: lj?.started_at ?? null,
+        latestJobFoldersWalked: lj?.progress_folders_walked ?? null,
+        latestJobFilesIndexed: lj?.progress_files_indexed ?? null,
+        latestJobApiCalls: lj?.api_calls_made ?? null,
+        latestJobTriggeredBy: lj?.triggered_by ?? null,
+        latestJobError: lj?.error_message ?? null,
       },
     };
   } catch (e) {
