@@ -248,3 +248,44 @@ flipped them to `pending` — so `pending` never reached 0, and the loop never e
 terminal signal** — here, the job row's own `status='completed'`/`'failed'` — not on a
 downstream aggregate. Corollary: give long-lived monitors a hard wall-clock cap and make
 sure they can be stopped (prefer the harness's job status over a count-watch loop).
+
+> **Addendum (2026-07-08):** this entry's root cause names "a Box sync cron indexed 48
+> new PDFs during the run" — that attribution is now known to be impossible: the Box crons
+> have *never* fired (see the Railway cron lesson below). The 48 PDFs were moved by a
+> *manual* walk or the extraction run itself, not a cron. The lesson (don't gate a monitor
+> on a movable derived count) stands regardless of what moved the count.
+
+## Railway cron: `[[deploy.cronJobs]]` array syntax is silently ignored
+
+**Symptom:** Three crons defined in `railway.toml` as `[[deploy.cronJobs]]` blocks (box
+incremental, box weekly-full, realnex nightly) never fired — no job rows, no logs, no
+errors. `railway status --json` showed `cronSchedule: null` and `nextCronRunAt: null` for
+the service despite the toml being deployed. The RealNex nightly was caught the morning
+after "enabling" it (no job row created at the scheduled 11:00 UTC); investigation showed
+the box crons had *also* never fired since their 2026-06-01 "re-enable" — the box index
+had been silently stale for ~5 weeks.
+
+**Root cause:** `[[deploy.cronJobs]]` (an array of cron jobs, each with its own `command`)
+is **not a real Railway feature.** Railway supports exactly ONE cron per service via a
+single `deploy.cronSchedule` string, and when it fires it runs that service's **start
+command** — not a custom command. Railway parses the unknown `deploy.cronJobs` key as
+inert config and never schedules anything, so it fails *invisibly*: no validation error,
+no log, it just never runs. (Confirmed against Railway's Config-as-Code reference — the
+only cron field under `[deploy]` is `cronSchedule` — and an open Railway Help Station
+"support multiple cron jobs on one service" feature request.)
+
+**Fix:** one Railway **service per scheduled command**, each with its own `cronSchedule` +
+a start command that runs the job (`npm run sync:realnex`, etc.). `scripts/sync-cron.ts`
+already awaits the job to completion then `process.exit(0/1)` — exactly the one-shot
+behavior a Railway cron service needs (the explicit exit also sidesteps the open-pg-pool
+"node won't exit" hang). Env vars do NOT transfer to new services automatically — set them
+per service or promote to Railway shared variables.
+
+**Lesson (general):** a cron in an unsupported/typo'd format fails silently — no error, it
+simply never runs. NEVER trust that a cron is "registered" because the config *looks*
+right. Always verify it actually FIRED at least once — check for the job row/log the cron
+should have produced (e.g. an un-manually-triggered DB row with `triggered_by='cron'`) —
+and ship a freshness/last-run health check for anything a cron is supposed to keep current,
+so silent staleness surfaces immediately instead of weeks later. (The RealNex mirror had a
+`checkRealNexMirror` freshness check that would have caught this on night one; the Box
+index had none — `checkBoxMirror` added 2026-07-08 as part of this fix.)
