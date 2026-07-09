@@ -309,3 +309,16 @@ PowerShell `railway variable set KEY --stdin` **prepends a UTF-8 BOM** to the va
 `BOX_TENANTS_CHAPMANHOECK_FOLDER_ID` made the Box root folder "not accessible" and the walk
 failed instantly. Set vars as direct `KEY=value` args, and BOM-check stored values (first char
 code must not be 65279). Full setup: `docs/RAILWAY_CRON_SETUP.md`.
+
+**Final resolution (2026-07-09) — schedules set via the GraphQL API.** The dashboard's Cron
+Schedule field would NOT persist for these services (4+ attempts, *with* the Apply/Deploy click
+— `railway status` kept the old/empty value), and the CLI has no cron command. Reliable path:
+Railway's GraphQL API — `serviceInstanceUpdate(serviceId, environmentId, input:{ cronSchedule })`,
+authed with the CLI's `RAILWAY_API_TOKEN` (`Authorization: Bearer`, `https://backboard.railway.app/graphql/v2`).
+That sets `serviceInstance.cronSchedule` and the scheduler picks it up immediately (`railway status`
+flips + shows the next run). To bake it into the deployment manifest so the service is a proper
+cron that build-and-waits (a manifest with no `cronSchedule` = a normal service that runs a walk
+on deploy + fails the web healthcheck), use **`railway up`** (a fresh deploy reads current config)
+— NOT `railway redeploy`, which replays the old manifest. All three ended green this way:
+`cron-realnex 0 11 * * *`, `cron-box-incremental 0 12 * * *`, `cron-box-full 0 13 * * 0`, each an
+Online Cron job in build-and-wait. Definitive method now in `docs/RAILWAY_CRON_SETUP.md`.

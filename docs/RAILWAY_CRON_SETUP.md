@@ -58,19 +58,31 @@ railway variable set "REALNEX_API_KEY=$val"                     --service cron-r
 (direct arg; value via a shell var so it's not printed). Verify: the stored value's first
 char code must **not** be 65279.
 
-### 2. Set `cronSchedule` + connect the source — DASHBOARD (CLI can't)
-The CLI has **no** way to set `cronSchedule` (verified — no subcommand/flag). Dashboard only.
-- Service → Settings → **Cron Schedule** = the value above.
-- **Order: set the schedule BEFORE connecting the source.** A service with *no* cronSchedule
-  is a normal service → it RUNS the start command on deploy (an unwanted walk/sync on connect,
-  and the deploy then hangs `DEPLOYING` on the web healthcheck it can't answer). WITH a
-  cronSchedule it's a cron → it builds and waits.
-- Service → Settings → Source → connect `reedlabarcb/hoeck-team-dashboard` @ `main`.
-- ⚠️ **Click the "Apply / Deploy staged changes" button.** Railway STAGES service-setting
-  edits (schedule, source) behind an explicit apply. Unclicked = the change silently doesn't
-  deploy. This is what made schedules "not take" and sources "stay disconnected" for us.
-- ⚠️ **A schedule change needs a (re)deploy to take effect** — `cronSchedule` is baked into
-  the deployment manifest; the running schedule doesn't change until a new deployment carries it.
+### 2. Set `cronSchedule` — via the GraphQL API (the dashboard is UNRELIABLE)
+The dashboard's Cron Schedule field **did not persist** for these services (4+ attempts, *with*
+the Apply/Deploy click — `railway status` kept showing the old/empty value). The CLI has no cron
+command either. **Reliable method: Railway's GraphQL API** (proven 2026-07-09).
+
+```
+# token: the CLI's RAILWAY_API_TOKEN env var (or .railway/config.json). Header: Authorization: Bearer <token>
+# endpoint: https://backboard.railway.app/graphql/v2
+mutation($sid:String!,$eid:String!,$cron:String){
+  serviceInstanceUpdate(serviceId:$sid, environmentId:$eid, input:{ cronSchedule:$cron })
+}
+# variables: sid=<service id>, eid=<production env id>, cron="0 11 * * *"  -> returns true
+```
+This sets `serviceInstance.cronSchedule`; the **scheduler picks it up immediately** — `railway
+status` flips and shows the next run. Read it back with the same query (`serviceInstance{ cronSchedule }`).
+
+**Then bake it into a deployment manifest** so the service is a proper cron (build-and-wait):
+run **`railway up --service <svc> --detach`** — a FRESH deploy reads the current
+`serviceInstance.cronSchedule` into the new manifest. Do **NOT** use `railway redeploy` — it
+REPLAYS the old manifest and won't pick up the API-set schedule. (A manifest with no
+`cronSchedule` = a normal service that runs the start command / a walk on deploy.)
+
+**Source:** connect via `railway service source connect --repo reedlabarcb/hoeck-team-dashboard
+--branch main --service <svc>` (or already connected). With the schedule set first, the fresh
+deploy builds-and-waits (no run-on-deploy walk).
 
 ### 3. Auto-deploy
 Recommend **OFF** ("Deploy on push") per cron service, so a push to `main` doesn't rebuild all
@@ -94,8 +106,14 @@ the deploy logs show `sh scripts/start-dispatch.sh` → the correct `npm run syn
    per-service dashboard start commands → cron services ran the web server. → the dispatcher.
 4. **Per-service Config-as-Code file paths didn't apply** (`railwayConfigFile` stayed empty;
    manifest kept the root start command). → abandoned config files for the dispatcher.
-5. **Dashboard edits stage behind an explicit Apply/Deploy click** — unclicked = not applied.
+5. **Dashboard `cronSchedule` edits don't persist** for these services — even *with* the
+   Apply/Deploy click (4+ attempts), `railway status` kept the old value. Set it via the API (step 2).
 6. **PowerShell `railway variable set --stdin` prepends a BOM** — corrupts values; use direct args.
+7. **`railway redeploy` REPLAYS the old manifest** — it won't pick up an API-set schedule.
+   Use **`railway up`** (a fresh deploy) to bake `serviceInstance.cronSchedule` into a new manifest.
+8. **A service with no `cronSchedule` in its manifest is a NORMAL service** → it runs the start
+   command on deploy (a walk/sync + a web-healthcheck-timeout `Failed`). The manifest schedule
+   (not just the scheduler-level one) is what makes it build-and-wait.
 
 **Verification discipline:** a mis-registered cron fails silently — no error, it just never
 runs. Always confirm a cron actually FIRED (a `triggered_by='cron'` row it produced); never
