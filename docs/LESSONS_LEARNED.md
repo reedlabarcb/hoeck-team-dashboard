@@ -289,3 +289,23 @@ and ship a freshness/last-run health check for anything a cron is supposed to ke
 so silent staleness surfaces immediately instead of weeks later. (The RealNex mirror had a
 `checkRealNexMirror` freshness check that would have caught this on night one; the Box
 index had none — `checkBoxMirror` added 2026-07-08 as part of this fix.)
+
+**Update (2026-07-09) — the working fix + more gotchas.** "One service per command" then hit
+three further Railway config-precedence walls: (2) `cronSchedule` is **manifest-baked** — a
+schedule change needs a redeploy to take effect; (3) **config-as-code overrides the
+dashboard** — while root `railway.toml` sets `startCommand`, a per-service *dashboard* start
+command is ignored, so the cron services ran the WEB server (`next start`) instead of the
+sync; (4) per-service **Config-as-Code file paths didn't apply** (`railwayConfigFile` stayed
+empty; the manifest kept the root start command). Working solution: a **`SERVICE_ROLE`
+dispatcher** — root `railway.toml` `startCommand = "sh scripts/start-dispatch.sh"`, which
+branches on a `SERVICE_ROLE` env var (unset → the web command byte-for-byte;
+`realnex`/`box-incremental`/`box-full` → the sync). One start command in code, per-service
+routing via an env var the CLI *can* set. Proven 2026-07-09: `cron-realnex` fired via cron
+(Run-now **and** an autonomous `0 0 UTC` scheduled run) and `cron-box-incremental` fired via
+cron. Two operational gotchas surfaced too: (5) dashboard service-setting edits (schedule,
+source) **stage behind an explicit "Apply/Deploy" click** — unclicked, they silently don't
+deploy (this is why schedules kept "not taking" and sources stayed disconnected); (6)
+PowerShell `railway variable set KEY --stdin` **prepends a UTF-8 BOM** to the value — a BOM'd
+`BOX_TENANTS_CHAPMANHOECK_FOLDER_ID` made the Box root folder "not accessible" and the walk
+failed instantly. Set vars as direct `KEY=value` args, and BOM-check stored values (first char
+code must not be 65279). Full setup: `docs/RAILWAY_CRON_SETUP.md`.
