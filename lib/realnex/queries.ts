@@ -96,32 +96,44 @@ export type ContactListRow = { key: string; fullName: string | null; firstName: 
  * Companies from the mirror, name-searched (ILIKE contains) and prefix-ranked (names that
  * START with the term sort first, then alphabetical). deleted rows excluded.
  */
-export async function searchCompanies(opts: { q?: string; group?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ companies: CompanyListRow[]; total: number }> {
-  const term = (opts.q ?? '').trim();
-  const limit = clampLimit(opts.limit);
-  const offset = clampOffset(opts.offset);
-
+/** WHERE for companies (shared by row query + count): not-deleted, optional name ILIKE, optional group. */
+function companiesWhere(term: string, group?: string) {
   const filters = [isNull(realnexCompanies.deletedAt)];
   if (term) filters.push(ilike(realnexCompanies.companyName, `%${escapeLike(term)}%`));
   // Group filter: the company's object_groups jsonb ([{Key,Name}, ...]) contains this group.
   // Match by NAME, not Key — objectGroups[].Key is UPPERCASE (OData) while realnex_groups holds
   // the /Crm lowercase key, so a Key match would miss on case; group names are consistent.
-  if (opts.group) filters.push(sql`${realnexCompanies.objectGroups} @> ${JSON.stringify([{ Name: opts.group }])}::jsonb`);
-  const where = and(...filters);
+  if (group) filters.push(sql`${realnexCompanies.objectGroups} @> ${JSON.stringify([{ Name: group }])}::jsonb`);
+  return and(...filters);
+}
 
+/**
+ * The companies row query — exported for SQL regression tests.
+ *
+ * CRITICAL (P3.5.2 bug): when there's NO search term, order ONLY by name. Do NOT emit a bare
+ * `sql\`0\`` fallback — Postgres reads a standalone integer in ORDER BY as a column ORDINAL, so
+ * `ORDER BY 0` throws "position 0 is not in select list" and 500s the empty/default list.
+ * Prefix-first ranking applies only when a term is present (a CASE expression, not a bare int).
+ */
+export function companiesRowsQuery(opts: { q?: string; group?: string; limit?: number | string; offset?: number | string } = {}) {
+  const term = (opts.q ?? '').trim();
   const prefix = `${escapeLike(term)}%`;
-  const rows = await db
+  const orderBy = term
+    ? [sql`CASE WHEN ${realnexCompanies.companyName} ILIKE ${prefix} THEN 0 ELSE 1 END`, asc(realnexCompanies.companyName)]
+    : [asc(realnexCompanies.companyName)];
+  return db
     .select(companyCols)
     .from(realnexCompanies)
-    .where(where)
-    .orderBy(
-      term ? sql`CASE WHEN ${realnexCompanies.companyName} ILIKE ${prefix} THEN 0 ELSE 1 END` : sql`0`,
-      asc(realnexCompanies.companyName),
-    )
-    .limit(limit)
-    .offset(offset);
+    .where(companiesWhere(term, opts.group))
+    .orderBy(...orderBy)
+    .limit(clampLimit(opts.limit))
+    .offset(clampOffset(opts.offset));
+}
 
-  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(realnexCompanies).where(where);
+export async function searchCompanies(opts: { q?: string; group?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ companies: CompanyListRow[]; total: number }> {
+  const rows = await companiesRowsQuery(opts);
+  const term = (opts.q ?? '').trim();
+  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(realnexCompanies).where(companiesWhere(term, opts.group));
   return { companies: rows as CompanyListRow[], total: count };
 }
 
@@ -129,36 +141,42 @@ export async function searchCompanies(opts: { q?: string; group?: string; limit?
  * Contacts from the mirror, searched across name + email (ILIKE contains) and prefix-ranked on
  * name. Optional `companyKey` filter (the materialized link). deleted rows excluded.
  */
-export async function searchContacts(opts: { q?: string; companyKey?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ contacts: ContactListRow[]; total: number }> {
-  const term = (opts.q ?? '').trim();
-  const limit = clampLimit(opts.limit);
-  const offset = clampOffset(opts.offset);
-
+/** WHERE for contacts (shared by row query + count): not-deleted, optional companyKey, optional name/email ILIKE. */
+function contactsWhere(term: string, companyKey?: string) {
   const filters = [isNull(realnexContacts.deletedAt)];
-  if (opts.companyKey) filters.push(eq(realnexContacts.companyKey, opts.companyKey));
+  if (companyKey) filters.push(eq(realnexContacts.companyKey, companyKey));
   if (term) {
     const like = `%${escapeLike(term)}%`;
     filters.push(
       sql`(${realnexContacts.fullName} ILIKE ${like} OR ${realnexContacts.firstName} ILIKE ${like} OR ${realnexContacts.lastName} ILIKE ${like} OR ${realnexContacts.email} ILIKE ${like})`,
     );
   }
-  const where = and(...filters);
+  return and(...filters);
+}
 
+/**
+ * The contacts row query — exported for SQL regression tests. Same ORDER BY safety as
+ * companiesRowsQuery: no bare `sql\`0\`` on the empty-term path (that 500s as ORDER BY ordinal 0).
+ */
+export function contactsRowsQuery(opts: { q?: string; companyKey?: string; limit?: number | string; offset?: number | string } = {}) {
+  const term = (opts.q ?? '').trim();
   const prefix = `${escapeLike(term)}%`;
-  const rows = await db
+  const orderBy = term
+    ? [sql`CASE WHEN (${realnexContacts.fullName} ILIKE ${prefix} OR ${realnexContacts.lastName} ILIKE ${prefix}) THEN 0 ELSE 1 END`, asc(realnexContacts.fullName)]
+    : [asc(realnexContacts.fullName)];
+  return db
     .select(contactCols)
     .from(realnexContacts)
-    .where(where)
-    .orderBy(
-      term
-        ? sql`CASE WHEN (${realnexContacts.fullName} ILIKE ${prefix} OR ${realnexContacts.lastName} ILIKE ${prefix}) THEN 0 ELSE 1 END`
-        : sql`0`,
-      asc(realnexContacts.fullName),
-    )
-    .limit(limit)
-    .offset(offset);
+    .where(contactsWhere(term, opts.companyKey))
+    .orderBy(...orderBy)
+    .limit(clampLimit(opts.limit))
+    .offset(clampOffset(opts.offset));
+}
 
-  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(realnexContacts).where(where);
+export async function searchContacts(opts: { q?: string; companyKey?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ contacts: ContactListRow[]; total: number }> {
+  const rows = await contactsRowsQuery(opts);
+  const term = (opts.q ?? '').trim();
+  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(realnexContacts).where(contactsWhere(term, opts.companyKey));
   return { contacts: rows as ContactListRow[], total: count };
 }
 

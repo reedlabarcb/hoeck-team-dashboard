@@ -6,8 +6,15 @@ import {
   contactDisplayName,
   isPrefixMatch,
   rankEntities,
+  companiesRowsQuery,
+  contactsRowsQuery,
   type EntityResult,
 } from './queries';
+
+// companiesRowsQuery/contactsRowsQuery touch the lazy db pool (getPool throws without
+// DATABASE_URL). toSQL() never connects, so a dummy URL is enough to render SQL for the
+// ORDER BY regression assertions below.
+if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgres://test:test@localhost:5432/test';
 
 describe('clampLimit', () => {
   it('defaults when absent/invalid', () => {
@@ -94,5 +101,32 @@ describe('rankEntities', () => {
     const copy = [...input];
     rankEntities(input, 'a');
     expect(input).toEqual(copy);
+  });
+});
+
+// Regression for the P3.5.2 bug: an empty search 500'd because the ORDER BY fell back to a bare
+// `sql`0``, which Postgres reads as column-ordinal 0 ("position 0 is not in select list").
+// These render the generated SQL via toSQL() (no DB execution) and assert the empty-q path
+// orders by name and NEVER emits "ORDER BY 0". Covers companies + contacts (both fed 5.3 + P3.6).
+describe('rows query ORDER BY — empty q must not emit "ORDER BY 0"', () => {
+  it('companies empty q: orders by name, no bare ORDER BY 0', () => {
+    const s = companiesRowsQuery({}).toSQL().sql.toLowerCase();
+    expect(s).not.toMatch(/order by 0\b/);
+    expect(s).toContain('order by "realnex_companies"."company_name"');
+  });
+  it('companies q=proc: prefix-rank CASE, still no ORDER BY 0', () => {
+    const s = companiesRowsQuery({ q: 'proc' }).toSQL().sql.toLowerCase();
+    expect(s).toContain('case when');
+    expect(s).not.toMatch(/order by 0\b/);
+  });
+  it('contacts empty q: orders by name, no bare ORDER BY 0', () => {
+    const s = contactsRowsQuery({}).toSQL().sql.toLowerCase();
+    expect(s).not.toMatch(/order by 0\b/);
+    expect(s).toContain('order by "realnex_contacts"."full_name"');
+  });
+  it('contacts q=mar: prefix-rank CASE, still no ORDER BY 0', () => {
+    const s = contactsRowsQuery({ q: 'mar' }).toSQL().sql.toLowerCase();
+    expect(s).toContain('case when');
+    expect(s).not.toMatch(/order by 0\b/);
   });
 });
