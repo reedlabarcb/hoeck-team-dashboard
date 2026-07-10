@@ -1,44 +1,53 @@
 'use client';
 
 /**
- * /companies — RealNex companies list, read from the local mirror (P3.5.2).
+ * /contacts — RealNex contacts list, read from the local mirror (P3.5.3). Sibling of
+ * /companies: same React Query cadence (60s poll + refetch-on-focus), same badges/banner,
+ * same table conventions.
  *
- * Reads GET /api/realnex/companies (search + group filter) and GET /api/realnex/groups
- * (filter dropdown). React Query with 60s poll + refetch-on-focus. Company NAME comes from
- * RealNex's OrganizationId field but is stored/served as company_name — the user only ever
- * sees the real name ("Full Swing Golf"), never a GUID or the "OrganizationId" label.
+ * Display name comes from full_name → "first last" → "(no name)" (contactDisplayName) — the
+ * user never sees a raw key. Each row links to its company on /companies (by name search,
+ * since detail views are deferred); the ~101 contacts with no resolved company_key show
+ * "(no company)" and render no link — no broken href, no error.
  *
- * <ConnectRealNexBanner> shows if no sync has run yet (mirror empty / key missing).
+ * Two filters beyond search: by company (exact company_key, options = companies that actually
+ * have contacts) and by group (the contact's own object_groups membership, matched by name).
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { LastUpdated } from '@/components/LastUpdated';
 import { LastSyncedBadge } from '@/components/LastSyncedBadge';
 import { ConnectRealNexBanner } from '@/components/ConnectRealNexBanner';
 import { useRealnexSyncStatus } from '@/lib/hooks/useRealnexSyncStatus';
+import { contactDisplayName } from '@/lib/realnex/format';
 
-interface CompanyRow {
+interface ContactRow {
   key: string;
-  name: string | null;
-  city: string | null;
-  state: string | null;
-  phone: string | null;
+  fullName: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  title: string | null;
   email: string | null;
-  website: string | null;
+  work: string | null;
+  mobile: string | null;
+  companyKey: string | null;
+  companyName: string | null;
   tenant: boolean | null;
   prospect: boolean | null;
 }
-interface CompaniesResponse { companies: CompanyRow[]; total: number }
+interface ContactsResponse { contacts: ContactRow[]; total: number }
 interface GroupsResponse { groups: { key: string; name: string | null }[] }
+interface CompaniesResponse { companies: { key: string; name: string | null }[] }
 
-async function fetchCompanies(q: string, group: string): Promise<CompaniesResponse> {
+async function fetchContacts(q: string, companyKey: string, group: string): Promise<ContactsResponse> {
   const p = new URLSearchParams();
   if (q) p.set('q', q);
+  if (companyKey) p.set('companyKey', companyKey);
   if (group) p.set('group', group);
   p.set('limit', '100');
-  const res = await fetch(`/api/realnex/companies?${p.toString()}`, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`Companies fetch failed: ${res.status}`);
+  const res = await fetch(`/api/realnex/contacts?${p.toString()}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Contacts fetch failed: ${res.status}`);
   return res.json();
 }
 async function fetchGroups(): Promise<GroupsResponse> {
@@ -46,31 +55,21 @@ async function fetchGroups(): Promise<GroupsResponse> {
   if (!res.ok) throw new Error(`Groups fetch failed: ${res.status}`);
   return res.json();
 }
-
-function fmtLocation(c: CompanyRow): string {
-  return [c.city, c.state].filter(Boolean).join(', ');
-}
-function normalizeWebsite(url: string): string {
-  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
+async function fetchContactCompanies(): Promise<CompaniesResponse> {
+  const res = await fetch('/api/realnex/contacts/companies', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Companies fetch failed: ${res.status}`);
+  return res.json();
 }
 
-export default function CompaniesPage() {
+export default function ContactsPage() {
   const [q, setQ] = useState('');
+  const [companyKey, setCompanyKey] = useState('');
   const [group, setGroup] = useState('');
   const { job, isLoading: syncLoading } = useRealnexSyncStatus({ enabled: true });
 
-  // Deep-link support: a contact's company link on /contacts lands here as /companies?q=<name>.
-  // Seed the search from the URL on mount — an effect, NOT a useState initializer, so the
-  // server-rendered empty input matches first client render (no hydration mismatch). Costs one
-  // extra refetch with the seeded term, which is fine.
-  useEffect(() => {
-    const urlQ = new URLSearchParams(window.location.search).get('q');
-    if (urlQ) setQ(urlQ);
-  }, []);
-
-  const companies = useQuery({
-    queryKey: ['realnex', 'companies', { q, group }],
-    queryFn: () => fetchCompanies(q, group),
+  const contacts = useQuery({
+    queryKey: ['realnex', 'contacts', { q, companyKey, group }],
+    queryFn: () => fetchContacts(q, companyKey, group),
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });
@@ -79,25 +78,30 @@ export default function CompaniesPage() {
     queryFn: fetchGroups,
     staleTime: 5 * 60_000,
   });
+  const companies = useQuery({
+    queryKey: ['realnex', 'contacts', 'companies'],
+    queryFn: fetchContactCompanies,
+    staleTime: 5 * 60_000,
+  });
 
   // Banner only once we KNOW no sync has run (avoid flashing it before status loads).
   const noSyncYet = !syncLoading && job === null;
-  const rows = companies.data?.companies ?? [];
-  const total = companies.data?.total ?? 0;
+  const rows = contacts.data?.contacts ?? [];
+  const total = contacts.data?.total ?? 0;
   const truncated = total > rows.length;
 
   return (
     <div className="mx-auto max-w-5xl p-6">
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Companies</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Contacts</h1>
           <p className="mt-0.5 text-xs text-gray-500">
-            {companies.data ? `${total.toLocaleString()} companies` : 'RealNex companies'} &middot; from the local mirror
+            {contacts.data ? `${total.toLocaleString()} contacts` : 'RealNex contacts'} &middot; from the local mirror
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">
           <LastSyncedBadge />
-          <LastUpdated query={companies} />
+          <LastUpdated query={contacts} />
         </div>
       </div>
 
@@ -108,11 +112,22 @@ export default function CompaniesPage() {
           <div className="mb-3 flex gap-2">
             <input
               type="search"
-              placeholder="Search companies by name…"
+              placeholder="Search contacts by name or email…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 focus:border-gray-500 focus:outline-none"
             />
+            <select
+              value={companyKey}
+              onChange={(e) => setCompanyKey(e.target.value)}
+              className="max-w-[12rem] rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+              aria-label="Filter by company"
+            >
+              <option value="">All companies</option>
+              {companies.data?.companies.filter((c) => c.name).map((c) => (
+                <option key={c.key} value={c.key}>{c.name}</option>
+              ))}
+            </select>
             <select
               value={group}
               onChange={(e) => setGroup(e.target.value)}
@@ -126,13 +141,13 @@ export default function CompaniesPage() {
             </select>
           </div>
 
-          {companies.isLoading ? (
-            <div className="p-6 text-sm text-gray-500">Loading companies…</div>
-          ) : companies.isError ? (
-            <div className="p-6 text-sm text-red-700">Failed to load companies.</div>
+          {contacts.isLoading ? (
+            <div className="p-6 text-sm text-gray-500">Loading contacts…</div>
+          ) : contacts.isError ? (
+            <div className="p-6 text-sm text-red-700">Failed to load contacts.</div>
           ) : rows.length === 0 ? (
             <div className="p-6 text-sm text-gray-500">
-              {q || group ? 'No companies match your search.' : 'No companies in the mirror yet.'}
+              {q || companyKey || group ? 'No contacts match your search.' : 'No contacts in the mirror yet.'}
             </div>
           ) : (
             <>
@@ -140,20 +155,18 @@ export default function CompaniesPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
                     <tr>
+                      <th className="px-3 py-2 text-left">Name</th>
+                      <th className="px-3 py-2 text-left">Title</th>
                       <th className="px-3 py-2 text-left">Company</th>
-                      <th className="px-3 py-2 text-left">Location</th>
-                      <th className="px-3 py-2 text-left">Phone</th>
                       <th className="px-3 py-2 text-left">Email</th>
-                      <th className="px-3 py-2 text-right">Website</th>
+                      <th className="px-3 py-2 text-left">Phone</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {rows.map((c) => (
                       <tr key={c.key} className="hover:bg-gray-50">
                         <td className="px-3 py-2">
-                          <span className={c.name ? 'text-gray-900' : 'italic text-gray-400'}>
-                            {c.name || '(unnamed)'}
-                          </span>
+                          <span className="text-gray-900">{contactDisplayName(c)}</span>
                           {c.tenant && (
                             <span className="ml-2 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-900">Tenant</span>
                           )}
@@ -161,16 +174,25 @@ export default function CompaniesPage() {
                             <span className="ml-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-900">Prospect</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-gray-600">{fmtLocation(c)}</td>
-                        <td className="px-3 py-2 text-gray-600">{c.phone}</td>
+                        <td className="px-3 py-2 text-gray-600">{c.title}</td>
+                        <td className="px-3 py-2">
+                          {c.companyKey && c.companyName ? (
+                            <a
+                              href={`/companies?q=${encodeURIComponent(c.companyName)}`}
+                              className="text-blue-700 hover:underline"
+                            >
+                              {c.companyName}
+                            </a>
+                          ) : c.companyKey ? (
+                            <span className="italic text-gray-400">(unnamed company)</span>
+                          ) : (
+                            <span className="italic text-gray-400">(no company)</span>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-gray-600">
                           {c.email ? <a href={`mailto:${c.email}`} className="text-blue-700 hover:underline">{c.email}</a> : null}
                         </td>
-                        <td className="px-3 py-2 text-right">
-                          {c.website ? (
-                            <a href={normalizeWebsite(c.website)} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-700 hover:underline">site ↗</a>
-                          ) : null}
-                        </td>
+                        <td className="px-3 py-2 text-gray-600">{c.work || c.mobile}</td>
                       </tr>
                     ))}
                   </tbody>

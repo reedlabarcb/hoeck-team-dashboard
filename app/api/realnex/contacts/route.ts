@@ -2,8 +2,8 @@
  * GET /api/realnex/contacts — search/list contacts from the RealNex MIRROR (READ-ONLY).
  *
  * Query params: ?q= (name/email search), ?companyKey= (filter to one company's contacts),
- * ?limit= (<=100), ?offset=. Reads local Postgres only — no live RealNex call. Powers the
- * /contacts list page (P3.5.3).
+ * ?group= (filter by the contact's group membership, by name), ?limit= (<=100), ?offset=.
+ * Reads local Postgres only — no live RealNex call. Powers the /contacts list page (P3.5.3).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth/session';
@@ -20,6 +20,7 @@ export async function GET(request: NextRequest) {
   const { contacts, total } = await searchContacts({
     q: url.searchParams.get('q') ?? undefined,
     companyKey: url.searchParams.get('companyKey') ?? undefined,
+    group: url.searchParams.get('group') ?? undefined,
     limit: url.searchParams.get('limit') ?? undefined,
     offset: url.searchParams.get('offset') ?? undefined,
   });

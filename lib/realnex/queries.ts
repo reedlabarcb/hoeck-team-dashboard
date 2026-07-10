@@ -14,9 +14,14 @@
  * target. The P3.5.1 review gate proves that key round-trips to the right record.
  */
 
-import { and, asc, eq, ilike, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, ilike, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { realnexCompanies, realnexContacts, realnexGroups } from '@/lib/db/schema';
+import { contactDisplayName } from './format';
+
+// Re-exported so server callers + tests keep importing it from '@/lib/realnex/queries',
+// while the pure implementation lives in the client-safe format module (single source).
+export { contactDisplayName };
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -42,13 +47,6 @@ export function clampOffset(raw: unknown): number {
  */
 export function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
-}
-
-/** A contact's best display name: full_name, else "first last", else a placeholder. */
-export function contactDisplayName(row: { fullName?: string | null; firstName?: string | null; lastName?: string | null }): string {
-  if (row.fullName && row.fullName.trim()) return row.fullName.trim();
-  const joined = [row.firstName, row.lastName].filter((s) => s && s.trim()).join(' ').trim();
-  return joined || '(no name)';
 }
 
 /** Shared autocomplete result shape — `key` is the RealNex object key (see file header). */
@@ -141,10 +139,14 @@ export async function searchCompanies(opts: { q?: string; group?: string; limit?
  * Contacts from the mirror, searched across name + email (ILIKE contains) and prefix-ranked on
  * name. Optional `companyKey` filter (the materialized link). deleted rows excluded.
  */
-/** WHERE for contacts (shared by row query + count): not-deleted, optional companyKey, optional name/email ILIKE. */
-function contactsWhere(term: string, companyKey?: string) {
+/** WHERE for contacts (shared by row query + count): not-deleted, optional companyKey, optional group, optional name/email ILIKE. */
+function contactsWhere(term: string, companyKey?: string, group?: string) {
   const filters = [isNull(realnexContacts.deletedAt)];
   if (companyKey) filters.push(eq(realnexContacts.companyKey, companyKey));
+  // Group filter: the contact's own object_groups jsonb ([{Key,Name}, ...]) contains this
+  // group. Match by NAME (not Key) — same case caveat as companiesWhere: objectGroups[].Key is
+  // UPPERCASE (OData) while realnex_groups holds the /Crm lowercase key, so a Key match misses.
+  if (group) filters.push(sql`${realnexContacts.objectGroups} @> ${JSON.stringify([{ Name: group }])}::jsonb`);
   if (term) {
     const like = `%${escapeLike(term)}%`;
     filters.push(
@@ -158,7 +160,7 @@ function contactsWhere(term: string, companyKey?: string) {
  * The contacts row query — exported for SQL regression tests. Same ORDER BY safety as
  * companiesRowsQuery: no bare `sql\`0\`` on the empty-term path (that 500s as ORDER BY ordinal 0).
  */
-export function contactsRowsQuery(opts: { q?: string; companyKey?: string; limit?: number | string; offset?: number | string } = {}) {
+export function contactsRowsQuery(opts: { q?: string; companyKey?: string; group?: string; limit?: number | string; offset?: number | string } = {}) {
   const term = (opts.q ?? '').trim();
   const prefix = `${escapeLike(term)}%`;
   const orderBy = term
@@ -167,16 +169,16 @@ export function contactsRowsQuery(opts: { q?: string; companyKey?: string; limit
   return db
     .select(contactCols)
     .from(realnexContacts)
-    .where(contactsWhere(term, opts.companyKey))
+    .where(contactsWhere(term, opts.companyKey, opts.group))
     .orderBy(...orderBy)
     .limit(clampLimit(opts.limit))
     .offset(clampOffset(opts.offset));
 }
 
-export async function searchContacts(opts: { q?: string; companyKey?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ contacts: ContactListRow[]; total: number }> {
+export async function searchContacts(opts: { q?: string; companyKey?: string; group?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ contacts: ContactListRow[]; total: number }> {
   const rows = await contactsRowsQuery(opts);
   const term = (opts.q ?? '').trim();
-  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(realnexContacts).where(contactsWhere(term, opts.companyKey));
+  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(realnexContacts).where(contactsWhere(term, opts.companyKey, opts.group));
   return { contacts: rows as ContactListRow[], total: count };
 }
 
@@ -250,4 +252,21 @@ export async function listGroups(): Promise<{ key: string; name: string | null }
     .from(realnexGroups)
     .where(isNull(realnexGroups.deletedAt))
     .orderBy(asc(realnexGroups.name));
+}
+
+/**
+ * Distinct companies that actually HAVE contacts ({key, name}) — powers the /contacts page's
+ * company-filter dropdown. `key` is the company's RealNex key (the materialized
+ * realnex_contacts.company_key), so selecting an option filters contacts by EXACT key, not a
+ * fuzzy name. Only non-deleted contacts with a resolved company_key contribute (the unlinked
+ * contacts add no option — they're reached by clearing the filter). Ordered by name.
+ */
+export async function listContactCompanies(): Promise<{ key: string; name: string | null }[]> {
+  const rows = await db
+    .selectDistinct({ key: realnexContacts.companyKey, name: realnexContacts.companyName })
+    .from(realnexContacts)
+    .where(and(isNull(realnexContacts.deletedAt), isNotNull(realnexContacts.companyKey)))
+    .orderBy(asc(realnexContacts.companyName));
+  // company_key is non-null here (isNotNull filter); narrow the drizzle nullable inference.
+  return rows as { key: string; name: string | null }[];
 }

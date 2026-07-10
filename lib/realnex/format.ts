@@ -32,3 +32,14 @@ export function syncStatusLabel(job: SyncJobLike | null): string {
   const who = job.triggeredBy === 'cron' ? 'auto' : job.triggeredBy;
   return `Synced ${relativeTime(job.completedAt)}${who ? ` · ${who}` : ''}`;
 }
+
+/**
+ * A contact's best display name: full_name, else "first last", else a placeholder.
+ * Pure + client-safe (no DB import) — used by both the server queries and the /contacts
+ * client page, so the "never show a raw key" fallback lives in exactly one place.
+ */
+export function contactDisplayName(row: { fullName?: string | null; firstName?: string | null; lastName?: string | null }): string {
+  if (row.fullName && row.fullName.trim()) return row.fullName.trim();
+  const joined = [row.firstName, row.lastName].filter((s) => s && s.trim()).join(' ').trim();
+  return joined || '(no name)';
+}

@@ -130,3 +130,25 @@ describe('rows query ORDER BY — empty q must not emit "ORDER BY 0"', () => {
     expect(s).not.toMatch(/order by 0\b/);
   });
 });
+
+// P3.5.3: /contacts adds a group filter (the contact's own object_groups @> [{Name}]) and a
+// company filter (exact company_key). Assert the generated SQL wires each correctly, that the
+// jsonb payload is a bound param (not inlined), and that adding a group never reintroduces the
+// empty-q ORDER BY 0 bug.
+describe('contactsRowsQuery — P3.5.3 group + company filters', () => {
+  it('group filter: emits object_groups @> jsonb, group name bound as a param', () => {
+    const built = contactsRowsQuery({ group: 'Tenant Rep' }).toSQL();
+    expect(built.sql.toLowerCase()).toContain('"realnex_contacts"."object_groups" @>');
+    expect(built.params).toContain(JSON.stringify([{ Name: 'Tenant Rep' }]));
+  });
+  it('company filter: emits company_key = <param>', () => {
+    const built = contactsRowsQuery({ companyKey: 'ABC-123' }).toSQL();
+    expect(built.sql.toLowerCase()).toContain('"realnex_contacts"."company_key" =');
+    expect(built.params).toContain('ABC-123');
+  });
+  it('empty q WITH a group: orders by name, still no ORDER BY 0', () => {
+    const s = contactsRowsQuery({ group: 'Tenant Rep' }).toSQL().sql.toLowerCase();
+    expect(s).not.toMatch(/order by 0\b/);
+    expect(s).toContain('order by "realnex_contacts"."full_name"');
+  });
+});
