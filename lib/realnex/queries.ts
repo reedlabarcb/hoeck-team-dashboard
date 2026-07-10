@@ -14,14 +14,15 @@
  * target. The P3.5.1 review gate proves that key round-trips to the right record.
  */
 
-import { and, asc, eq, ilike, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, ilike, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { realnexCompanies, realnexContacts, realnexGroups } from '@/lib/db/schema';
-import { contactDisplayName } from './format';
+import { contactDisplayName, type EntityResult } from './format';
 
-// Re-exported so server callers + tests keep importing it from '@/lib/realnex/queries',
-// while the pure implementation lives in the client-safe format module (single source).
+// Re-exported so server callers + tests keep importing them from '@/lib/realnex/queries',
+// while the pure implementation/shape lives in the client-safe format module (single source).
 export { contactDisplayName };
+export type { EntityResult };
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -47,15 +48,6 @@ export function clampOffset(raw: unknown): number {
  */
 export function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
-}
-
-/** Shared autocomplete result shape — `key` is the RealNex object key (see file header). */
-export interface EntityResult {
-  type: 'contact' | 'company';
-  key: string;
-  displayName: string;
-  companyName: string | null;
-  email: string | null;
 }
 
 // ---- curated row shapes for the list UIs (not the raw jsonb-heavy rows) ----
@@ -252,21 +244,4 @@ export async function listGroups(): Promise<{ key: string; name: string | null }
     .from(realnexGroups)
     .where(isNull(realnexGroups.deletedAt))
     .orderBy(asc(realnexGroups.name));
-}
-
-/**
- * Distinct companies that actually HAVE contacts ({key, name}) — powers the /contacts page's
- * company-filter dropdown. `key` is the company's RealNex key (the materialized
- * realnex_contacts.company_key), so selecting an option filters contacts by EXACT key, not a
- * fuzzy name. Only non-deleted contacts with a resolved company_key contribute (the unlinked
- * contacts add no option — they're reached by clearing the filter). Ordered by name.
- */
-export async function listContactCompanies(): Promise<{ key: string; name: string | null }[]> {
-  const rows = await db
-    .selectDistinct({ key: realnexContacts.companyKey, name: realnexContacts.companyName })
-    .from(realnexContacts)
-    .where(and(isNull(realnexContacts.deletedAt), isNotNull(realnexContacts.companyKey)))
-    .orderBy(asc(realnexContacts.companyName));
-  // company_key is non-null here (isNotNull filter); narrow the drizzle nullable inference.
-  return rows as { key: string; name: string | null }[];
 }

@@ -19,6 +19,7 @@ import { useQuery } from '@tanstack/react-query';
 import { LastUpdated } from '@/components/LastUpdated';
 import { LastSyncedBadge } from '@/components/LastSyncedBadge';
 import { ConnectRealNexBanner } from '@/components/ConnectRealNexBanner';
+import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
 import { useRealnexSyncStatus } from '@/lib/hooks/useRealnexSyncStatus';
 import { contactDisplayName } from '@/lib/realnex/format';
 
@@ -38,7 +39,6 @@ interface ContactRow {
 }
 interface ContactsResponse { contacts: ContactRow[]; total: number }
 interface GroupsResponse { groups: { key: string; name: string | null }[] }
-interface CompaniesResponse { companies: { key: string; name: string | null }[] }
 
 async function fetchContacts(q: string, companyKey: string, group: string): Promise<ContactsResponse> {
   const p = new URLSearchParams();
@@ -53,11 +53,6 @@ async function fetchContacts(q: string, companyKey: string, group: string): Prom
 async function fetchGroups(): Promise<GroupsResponse> {
   const res = await fetch('/api/realnex/groups', { cache: 'no-store' });
   if (!res.ok) throw new Error(`Groups fetch failed: ${res.status}`);
-  return res.json();
-}
-async function fetchContactCompanies(): Promise<CompaniesResponse> {
-  const res = await fetch('/api/realnex/contacts/companies', { cache: 'no-store' });
-  if (!res.ok) throw new Error(`Companies fetch failed: ${res.status}`);
   return res.json();
 }
 
@@ -76,11 +71,6 @@ export default function ContactsPage() {
   const groups = useQuery({
     queryKey: ['realnex', 'groups'],
     queryFn: fetchGroups,
-    staleTime: 5 * 60_000,
-  });
-  const companies = useQuery({
-    queryKey: ['realnex', 'contacts', 'companies'],
-    queryFn: fetchContactCompanies,
     staleTime: 5 * 60_000,
   });
 
@@ -110,24 +100,20 @@ export default function ContactsPage() {
       ) : (
         <>
           <div className="mb-3 flex gap-2">
-            <input
-              type="search"
+            <RealNexEntitySearch
+              type="contact"
               placeholder="Search contacts by name or email…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 focus:border-gray-500 focus:outline-none"
+              onQueryChange={setQ}
+              onSelect={(e) => setQ(e.displayName)}
+              className="flex-1"
             />
-            <select
-              value={companyKey}
-              onChange={(e) => setCompanyKey(e.target.value)}
-              className="max-w-[12rem] rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
-              aria-label="Filter by company"
-            >
-              <option value="">All companies</option>
-              {companies.data?.companies.filter((c) => c.name).map((c) => (
-                <option key={c.key} value={c.key}>{c.name}</option>
-              ))}
-            </select>
+            <RealNexEntitySearch
+              type="company"
+              placeholder="Filter by company…"
+              onSelect={(e) => setCompanyKey(e.key)}
+              onClear={() => setCompanyKey('')}
+              className="w-56 shrink-0"
+            />
             <select
               value={group}
               onChange={(e) => setGroup(e.target.value)}

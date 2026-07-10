@@ -1,4 +1,18 @@
-/** Pure UI formatters for RealNex freshness display (P3.5). No DOM, no deps — unit-testable. */
+/** Pure UI formatters + client-safe shared types for RealNex UI (P3.5). No DB/DOM — unit-testable. */
+
+/**
+ * Shared autocomplete/resolver result shape. `key` is the RealNex OBJECT KEY (realnex_key) —
+ * the exact key P3.6 appendActivity POSTs to (/Crm/object/{key}/history). Lives here (not in
+ * the server-only queries module) so the <RealNexEntitySearch> client component and the server
+ * resolver share ONE definition — the key field must never drift between them.
+ */
+export interface EntityResult {
+  type: 'contact' | 'company';
+  key: string;
+  displayName: string;
+  companyName: string | null;
+  email: string | null;
+}
 
 /** Human "5 min ago" style relative time from an ISO string. */
 export function relativeTime(iso: string | null | undefined): string {

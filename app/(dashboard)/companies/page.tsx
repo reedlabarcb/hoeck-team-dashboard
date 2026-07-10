@@ -11,11 +11,12 @@
  * <ConnectRealNexBanner> shows if no sync has run yet (mirror empty / key missing).
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { LastUpdated } from '@/components/LastUpdated';
 import { LastSyncedBadge } from '@/components/LastSyncedBadge';
 import { ConnectRealNexBanner } from '@/components/ConnectRealNexBanner';
+import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
 import { useRealnexSyncStatus } from '@/lib/hooks/useRealnexSyncStatus';
 
 interface CompanyRow {
@@ -60,13 +61,11 @@ export default function CompaniesPage() {
   const { job, isLoading: syncLoading } = useRealnexSyncStatus({ enabled: true });
 
   // Deep-link support: a contact's company link on /contacts lands here as /companies?q=<name>.
-  // Seed the search from the URL on mount — an effect, NOT a useState initializer, so the
-  // server-rendered empty input matches first client render (no hydration mismatch). Costs one
-  // extra refetch with the seeded term, which is fine.
-  useEffect(() => {
-    const urlQ = new URLSearchParams(window.location.search).get('q');
-    if (urlQ) setQ(urlQ);
-  }, []);
+  // Read once for the typeahead's initialQuery (it seeds via an effect, so no hydration
+  // mismatch). SSR-guarded; the value is only passed as a prop, never rendered by this page.
+  const [initialQ] = useState(() =>
+    typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('q') ?? '',
+  );
 
   const companies = useQuery({
     queryKey: ['realnex', 'companies', { q, group }],
@@ -106,12 +105,13 @@ export default function CompaniesPage() {
       ) : (
         <>
           <div className="mb-3 flex gap-2">
-            <input
-              type="search"
+            <RealNexEntitySearch
+              type="company"
               placeholder="Search companies by name…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 focus:border-gray-500 focus:outline-none"
+              initialQuery={initialQ}
+              onQueryChange={setQ}
+              onSelect={(e) => setQ(e.displayName)}
+              className="flex-1"
             />
             <select
               value={group}
