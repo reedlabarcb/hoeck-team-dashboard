@@ -1,49 +1,68 @@
 /**
  * RealNex Safe Wrapper — Phase 3.
  *
- * The ONLY module application code uses to touch RealNex. It calls `realnexGet`
- * (read) from ./client. The HTTP client exposes no PUT/PATCH/DELETE primitive at
- * all, so the wrapper physically cannot mutate or delete — see ./client header.
+ * The ONLY module application code uses to touch RealNex. Reads go through `realnexGet`; the one
+ * write goes through `realnexAppendObjectHistory` (both from ./client). Those are the ONLY two
+ * HTTP primitives that exist — no PUT/PATCH/DELETE, no generic POST — so the list below is the
+ * COMPLETE and EXHAUSTIVE contract, enforced BY CONSTRUCTION, not by convention.
  *
- * ┌──────────────────────────────────────────────────────────────────────────┐
- * │ WRITE POLICY (enforced here + in ./client + .husky/pre-commit + safe.test) │
- * │                                                                            │
- * │ ALLOWED:                                                                   │
- * │   • Create a new Company            (P3.6: createCompany)                  │
- * │   • Create a new Contact            (P3.6: createContact)                  │
- * │   • Append a NEW History/Activity to an EXISTING Company/Contact           │
- * │     (P3.9: appendActivity) — this CREATES a child object; it does NOT      │
- * │     edit the parent's fields. Nadya's Workflow 3 requires it.              │
- * │                                                                            │
- * │ FORBIDDEN — permanently:                                                   │
- * │   • Modifying ANY field on an existing Company/Contact (no PUT/PATCH)      │
- * │   • Deleting ANYTHING (no DELETE)                                          │
- * │                                                                            │
- * │ THIS PHASE (P3.1) IS READ-ONLY. No create methods yet; they arrive in P3.6 │
- * │ behind this same enforcement.                                              │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * ┌────────────────────────────────────────────────────────────────────────────────────┐
+ * │ WHAT THE DASHBOARD CAN DO TO RealNex — the entire contract:                          │
+ * │                                                                                      │
+ * │  READ (12 GETs): getClientInfo, listGroups, listEventTypes, listHistoryStatuses,     │
+ * │    listUsers, getCompany, getContact, searchContacts, getObjectHistory,              │
+ * │    listCompanies, listContacts, getCompanyContacts.                                  │
+ * │                                                                                      │
+ * │  ADD A NOTE (1 create): appendActivity — POSTs a NEW History child onto an EXISTING  │
+ * │    company/contact (POST /object/{key}/history). CREATES a child activity; does NOT  │
+ * │    touch the parent's fields. Nadya's Workflow 3 needs exactly this.                 │
+ * │                                                                                      │
+ * │ WHAT THE DASHBOARD CAN *NEVER* DO — not now, not ever, and NOT EXPRESSIBLE in code:  │
+ * │  • EDIT / MODIFY any field on any existing company, contact, history, or group       │
+ * │    — no PUT/PATCH primitive exists.                                                  │
+ * │  • DELETE anything — no DELETE primitive exists.                                     │
+ * │  • MOVE / RE-PARENT anything — change a contact's company, move a history to another │
+ * │    object, add/remove group membership. "Moving" is an edit; no primitive expresses  │
+ * │    it.                                                                               │
+ * │                                                                                      │
+ * │ Adding a note is an APPEND (a new child object), NEVER a touch to the parent record. │
+ * └────────────────────────────────────────────────────────────────────────────────────┘
  *
- * Endpoints DELIBERATELY NOT WRAPPED (and never to be — they mutate/delete):
+ * Enforced in FOUR independent layers:
+ *   1. HTTP client (./client) exposes only realnexGet + realnexAppendObjectHistory (path-LOCKED
+ *      to /object/{key}/history) — edit/delete/move/re-parent are UNEXPRESSIBLE, not just banned.
+ *   2. This wrapper exports EXACTLY the 13 methods listed above — nothing that mutates a parent.
+ *   3. .husky/pre-commit greps forbidden method names + verbs (incl. move/re-parent) outside
+ *      lib/external/, and blocks any raw sync.realnex.com reference outside this dir.
+ *   4. safe.test.ts asserts the surface by SET-EQUALITY (adding ANY method fails) + an explicit
+ *      forbidden-list (update/delete/put/patch/move/re-parent all toBeUndefined()).
+ *
+ * Endpoints DELIBERATELY NOT WRAPPED (and never to be — they edit / delete / move / re-parent):
  *   • PUT  /api/v1/Crm/company/{key}            (PutEditCompanyAsync)   — edit company
  *   • PUT  /api/v1/Crm/company/{key}/notes      (PutCompanyNotesAsync)  — edit company notes
  *   • PUT  /api/v1/Crm/company/{key}/details    (PutCompanyDetailsAsync)— edit company details
  *   • DELETE /api/v1/Crm/company/{key}          (DeleteCompanyAsync)
- *   • PUT  /api/v1/Crm/contact/{key}            (PutEditContactAsync)   — edit contact
+ *   • PUT  /api/v1/Crm/contact/{key}            (PutEditContactAsync)   — edit contact (incl. its
+ *                                                                          company → this is a MOVE)
  *   • PUT  /api/v1/Crm/contact/{key}/notes      (PutContactNotesAsync)
  *   • PUT  /api/v1/Crm/contact/{key}/{personal|agent|investor|tenant|vendor}  — edit contact subresources
  *   • DELETE /api/v1/Crm/contact/{key}          (DeleteContactAsync)
  *   • PUT/DELETE on /api/v1/Crm/contact/{key}/address/...                       — edit/delete addresses
  *   • PUT  /api/v1/Crm/history/{key}            (PutHistoryAsync)       — edit history
  *   • DELETE /api/v1/Crm/history/{key}          (DeleteHistoryAsync)
+ *   • POST /api/v1/Crm/history/{key}/object     (PostHistoryObjectsAsync) — RE-LINK a history to
+ *                                                                          another object (a MOVE)
  *   • DELETE /api/v1/Crm/history/{key}/object/{objectKey}                       — unlink history
+ *   • POST /api/v1/Crm/group/{key}/members      (PostObjectGroupMembersAsync) — add group membership
+ *                                                                          (RE-PARENT into a group)
  *   • PUT/DELETE on /api/v1/Crm/group/{key} and /members/...                    — edit/delete groups + membership
- * If you think you need one of these, you don't — re-read the WRITE POLICY above.
+ * If you think you need one of these, you don't — re-read the contract above.
  *
  * Lineage: BUILD_SPEC.md § "Safety Rules → RealNex"; docs/PHASE3_BUILD_PLAN.md
  *          "RealNex Write Safety — Enforced in Code"; docs/RealNex_API_Discovery.md.
  */
 
-import { realnexGet } from './client';
+import { realnexGet, realnexAppendObjectHistory } from './client';
 import type {
   RealNexClientInfo,
   RealNexGroupPage,
@@ -56,6 +75,7 @@ import type {
   RealNexCompanyListItem,
   RealNexContactListItem,
   RealNexContactListItemPage,
+  AppendActivityInput,
 } from './types';
 
 const enc = encodeURIComponent;
@@ -179,12 +199,40 @@ export function getCompanyContacts(
   });
 }
 
-// ----- Create methods: NOT in P3.1 (read-only phase). Added in P3.6: -----
-// TODO(P3.6): createCompany(input): POST /api/v1/Crm/company       — tags Source: Dashboard
-// TODO(P3.6): createContact(input): POST /api/v1/Crm/contact       — tags Source: Dashboard
-// TODO(P3.9): appendActivity(objectKey, input): POST /api/v1/Crm/object/{key}/history
-//             — CREATES a child History on an existing record; NOT a parent edit.
-// (Each requires adding `realnexPost` to ./client. No PUT/PATCH/DELETE primitive — ever.)
+// ----- Create methods (create-only — NO update / delete / move / re-parent, ever) -----
 
-/** Still read-only (P3.4 added GET-only OData reads). Bumped to *-writes when create methods land (P3.6). */
-export const __SAFE_WRAPPER_VERSION = 'phase-3.4-readonly';
+/**
+ * appendActivity — CREATE a new History child on an EXISTING company or contact.
+ *
+ * ADD-ONLY. POSTs a brand-new History object linked to `objectKey`; it does NOT read back, edit,
+ * move, re-parent, or delete the parent, and touches NONE of the parent's fields. `objectKey` is
+ * the parent's RealNex object key (a company or contact key — the same key the P3.5.4 resolver
+ * returns). It calls the path-LOCKED realnexAppendObjectHistory primitive, so it can only ever
+ * hit POST /api/v1/Crm/object/{key}/history — never any other endpoint.
+ *
+ * The write body is the EditHistory model (shape confirmed against the live API): the event type
+ * is the NUMERIC `eventTypeKey` (e.g. 18 = Note; see REALNEX_EVENT_TYPE), plus subject/notes and
+ * start/end timestamps (default now). No parent identifier beyond objectKey is sent, so there is
+ * no field on the parent this could possibly change.
+ */
+export function appendActivity(objectKey: string, input: AppendActivityInput): Promise<unknown> {
+  const now = new Date().toISOString().slice(0, 19); // "YYYY-MM-DDTHH:mm:ss" — RealNex stores naive-local
+  const start = input.startDate ?? now;
+  const body = {
+    eventTypeKey: input.eventTypeKey,
+    subject: input.subject,
+    notes: input.notes ?? '',
+    startDate: start,
+    endDate: input.endDate ?? start,
+    timeless: input.timeless ?? false,
+    published: input.published ?? false,
+  };
+  return realnexAppendObjectHistory<unknown>(objectKey, body);
+}
+
+// createCompany / createContact are intentionally NOT here — note-logging doesn't need them, and
+// every write method is risk on a live CRM. They belong with their forms (P3.7/P3.8) and would get
+// their own narrow create primitives + a safe.test set-equality update if/when those are built.
+
+/** Read methods + the single create (appendActivity). Bumped from phase-3.4-readonly (P3.6). */
+export const __SAFE_WRAPPER_VERSION = 'phase-3.6-append-activity';

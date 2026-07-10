@@ -11,10 +11,18 @@
  *
  * WRITE-SAFETY AT THE HTTP LAYER
  * ------------------------------
- * This module exposes ONLY `realnexGet`. There is deliberately NO generic verb-taking
- * request function - so no caller can issue PUT / PATCH / DELETE to RealNex, by accident
- * or otherwise. `realnexPost` (create-only) is added in P3.6 when Company/Contact/Activity
- * creation lands. A PUT/PATCH/DELETE helper must NEVER be added here.
+ * This module exposes exactly TWO functions:
+ *   • realnexGet                 - any read (GET).
+ *   • realnexAppendObjectHistory - the ONE write: POST a NEW History child onto an EXISTING
+ *                                  object. Its URL is BUILT HERE from objectKey (no caller-
+ *                                  supplied path), so it can append a history entry and NOTHING
+ *                                  else - it cannot POST to /company, /contact, /group,
+ *                                  /history/{key}/object, etc.
+ * There is deliberately NO generic verb-taking request function and NO PUT / PATCH / DELETE
+ * primitive. So editing, deleting, moving, or re-parenting any RealNex record is UNEXPRESSIBLE
+ * in code, not merely policy-forbidden. A PUT/PATCH/DELETE helper - or a generic POST that takes
+ * a caller-supplied path - must NEVER be added here. If P3.7/P3.8 add company/contact creation,
+ * each gets its own equally-narrow create primitive, reviewed at that time.
  * See docs/PHASE3_BUILD_PLAN.md "RealNex Write Safety - Enforced in Code".
  */
 
@@ -35,7 +43,7 @@ export class RealNexApiError extends Error {
     public bodyHead: string,
     public path: string,
   ) {
-    super(`RealNex GET ${path} -> HTTP ${status}: ${bodyHead.slice(0, 300)}`);
+    super(`RealNex ${path} -> HTTP ${status}: ${bodyHead.slice(0, 300)}`);
     this.name = 'RealNexApiError';
   }
 }
@@ -87,12 +95,57 @@ export async function realnexGet<T>(path: string, opts: GetOpts = {}): Promise<T
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new RealNexApiError(res.status, text, path);
+    throw new RealNexApiError(res.status, text, `GET ${path}`);
   }
   if (!text) return undefined as unknown as T;
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new RealNexApiError(res.status, `non-JSON body: ${text.slice(0, 200)}`, path);
+    throw new RealNexApiError(res.status, `non-JSON body: ${text.slice(0, 200)}`, `GET ${path}`);
+  }
+}
+
+interface PostOpts {
+  /** ms; default 20s. */
+  timeoutMs?: number;
+}
+
+/**
+ * The ONE AND ONLY write. Appends a NEW History child to an EXISTING object:
+ *   POST /api/v1/Crm/object/{objectKey}/history
+ *
+ * The path is built HERE from objectKey — the caller supplies only the objectKey and the body,
+ * never a path — so this function can create a history append and NOTHING else. It physically
+ * cannot POST to /company, /contact, /group/{key}/members, /history/{key}/object, or any other
+ * endpoint. Combined with the absence of any PUT/PATCH/DELETE primitive, that makes editing,
+ * deleting, moving, or re-parenting a RealNex record UNEXPRESSIBLE here — see the module header.
+ *
+ * `objectKey` is the EXISTING parent (company or contact) to attach the History to; the parent's
+ * own fields are never sent and never change. Returns the raw response text (POST .../history is
+ * documented "(no schema)" and may return an empty or non-JSON body on success).
+ */
+export async function realnexAppendObjectHistory<T>(objectKey: string, body: unknown, opts: PostOpts = {}): Promise<T> {
+  const key = requireKey();
+  const path = `/api/v1/Crm/object/${encodeURIComponent(objectKey)}/history`;
+  const res = await fetch(buildUrl(path), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'hoeck-team-dashboard/realnex (CBRE)',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new RealNexApiError(res.status, text, `POST ${path}`);
+  }
+  if (!text) return undefined as unknown as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as unknown as T;
   }
 }

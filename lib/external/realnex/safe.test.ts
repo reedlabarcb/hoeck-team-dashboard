@@ -13,10 +13,10 @@ import * as realnexSafe from './safe';
  */
 
 // The EXACT set of methods the wrapper may export at this phase.
-// P3.1 = 9 read methods. P3.4 added EXACTLY 3 more GET-only reads for the mirror
-// sync (listCompanies, listContacts, getCompanyContacts) — still read-only, no
-// create/update/delete. When create methods land in P3.6/P3.9, add EXACTLY
-// 'createCompany', 'createContact', 'appendActivity' here — nothing else.
+// P3.1 = 9 reads. P3.4 added 3 GET-only reads (listCompanies, listContacts, getCompanyContacts).
+// P3.6 added EXACTLY ONE create — 'appendActivity' (add-only child append). createCompany /
+// createContact are deliberately NOT added (deferred to P3.7/P3.8); if they ever land, add them
+// here too — this set-equality test forces that deliberate update + review.
 const ALLOWED = [
   'getClientInfo',
   'listGroups',
@@ -31,6 +31,8 @@ const ALLOWED = [
   'listCompanies',
   'listContacts',
   'getCompanyContacts',
+  // P3.6 — the ONE create (add-only child History append; NO update/delete/move):
+  'appendActivity',
 ] as const;
 
 const FORBIDDEN = [
@@ -43,6 +45,10 @@ const FORBIDDEN = [
   'updateHistory', 'putHistory', 'deleteHistory',
   // Groups + membership
   'updateGroup', 'patchGroup', 'putGroup', 'deleteGroup', 'deleteGroupMember',
+  // Move / re-parent — "moving" a record is an EDIT; must be as impossible as delete
+  'moveContact', 'moveCompany', 'reparentContact', 'reparentCompany',
+  'setContactCompany', 'changeContactCompany', 'moveActivity', 'moveHistory',
+  'reparentHistory', 'addGroupMember', 'removeGroupMember',
 ] as const;
 
 describe('realnex safe wrapper — exported surface', () => {

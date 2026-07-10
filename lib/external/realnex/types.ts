@@ -120,6 +120,44 @@ export interface RealNexHistoryPage {
   [k: string]: unknown;
 }
 
+/**
+ * Event-type numeric ids from GET /api/v1/Crm/eventtypes (probed 2026-07-10; 29 total, this is
+ * the note-logging subset). The write body (EditHistory) takes the NUMERIC `eventTypeKey`, NOT
+ * the name and NOT the read-side nested `eventType:{key,name}`. RealNex system ids — stable.
+ */
+export const REALNEX_EVENT_TYPE = {
+  Note: 18,
+  'Phone Call': 1,
+  'Cold Call': 101,
+  Email: 15,
+  Meeting: 2,
+  Other: 11,
+} as const;
+
+export type RealNexEventTypeName = keyof typeof REALNEX_EVENT_TYPE;
+
+/**
+ * Input to `appendActivity` — the EditHistory fields set when CREATING a History CHILD on an
+ * existing object. Nothing here touches the parent record; `objectKey` (passed separately) only
+ * identifies the parent to attach to. Shape confirmed by reading the live EditHistory model.
+ */
+export interface AppendActivityInput {
+  /** Required. Numeric event-type id (see REALNEX_EVENT_TYPE), e.g. 18 = Note. */
+  eventTypeKey: number;
+  /** Headline shown in the RealNex activity feed. */
+  subject: string;
+  /** The verbatim note body. */
+  notes?: string;
+  /** ISO local "YYYY-MM-DDTHH:mm:ss"; defaults to now. */
+  startDate?: string;
+  /** Defaults to startDate. */
+  endDate?: string;
+  /** Default false. */
+  timeless?: boolean;
+  /** Default false (matches existing entries). */
+  published?: boolean;
+}
+
 /** Standard paging args for list endpoints (RealNex declares no defaults — always pass them). */
 export interface RealNexPaging {
   pageNumber?: number;
