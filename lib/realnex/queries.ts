@@ -16,7 +16,7 @@
 
 import { and, asc, eq, ilike, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
-import { realnexCompanies, realnexContacts } from '@/lib/db/schema';
+import { realnexCompanies, realnexContacts, realnexGroups } from '@/lib/db/schema';
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -96,14 +96,18 @@ export type ContactListRow = { key: string; fullName: string | null; firstName: 
  * Companies from the mirror, name-searched (ILIKE contains) and prefix-ranked (names that
  * START with the term sort first, then alphabetical). deleted rows excluded.
  */
-export async function searchCompanies(opts: { q?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ companies: CompanyListRow[]; total: number }> {
+export async function searchCompanies(opts: { q?: string; group?: string; limit?: number | string; offset?: number | string } = {}): Promise<{ companies: CompanyListRow[]; total: number }> {
   const term = (opts.q ?? '').trim();
   const limit = clampLimit(opts.limit);
   const offset = clampOffset(opts.offset);
 
-  const where = term
-    ? and(isNull(realnexCompanies.deletedAt), ilike(realnexCompanies.companyName, `%${escapeLike(term)}%`))
-    : isNull(realnexCompanies.deletedAt);
+  const filters = [isNull(realnexCompanies.deletedAt)];
+  if (term) filters.push(ilike(realnexCompanies.companyName, `%${escapeLike(term)}%`));
+  // Group filter: the company's object_groups jsonb ([{Key,Name}, ...]) contains this group.
+  // Match by NAME, not Key — objectGroups[].Key is UPPERCASE (OData) while realnex_groups holds
+  // the /Crm lowercase key, so a Key match would miss on case; group names are consistent.
+  if (opts.group) filters.push(sql`${realnexCompanies.objectGroups} @> ${JSON.stringify([{ Name: opts.group }])}::jsonb`);
+  const where = and(...filters);
 
   const prefix = `${escapeLike(term)}%`;
   const rows = await db
@@ -219,4 +223,13 @@ export async function resolveEntities(opts: { q: string; type?: 'contact' | 'com
   }
 
   return rankEntities(results, term).slice(0, limit);
+}
+
+/** Groups from the mirror ({key, name}), for the list-page filter dropdown. Ordered by name. */
+export async function listGroups(): Promise<{ key: string; name: string | null }[]> {
+  return db
+    .select({ key: realnexGroups.realnexKey, name: realnexGroups.name })
+    .from(realnexGroups)
+    .where(isNull(realnexGroups.deletedAt))
+    .orderBy(asc(realnexGroups.name));
 }

@@ -1,0 +1,34 @@
+/** Pure UI formatters for RealNex freshness display (P3.5). No DOM, no deps — unit-testable. */
+
+/** Human "5 min ago" style relative time from an ISO string. */
+export function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return 'never';
+  const diffSec = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const min = Math.round(diffSec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} hr ago`;
+  const day = Math.round(hr / 24);
+  return `${day} day${day === 1 ? '' : 's'} ago`;
+}
+
+export interface SyncJobLike {
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  completedAt: string | null;
+  triggeredBy: string;
+}
+
+/**
+ * Badge label for the latest RealNex sync job (or null when none has run).
+ * `cron` is shown as "auto" so the user reads it as the nightly job, not a person.
+ */
+export function syncStatusLabel(job: SyncJobLike | null): string {
+  if (!job) return 'Never synced';
+  if (job.status === 'queued' || job.status === 'running') return 'Syncing…';
+  if (job.status === 'failed') return `Last sync failed (${relativeTime(job.completedAt)})`;
+  const who = job.triggeredBy === 'cron' ? 'auto' : job.triggeredBy;
+  return `Synced ${relativeTime(job.completedAt)}${who ? ` · ${who}` : ''}`;
+}
