@@ -31,6 +31,7 @@ Master Excel: append-only in v1.
 - Next.js on Railway with volumes needs `output: 'standalone'` (inbound-tracker `ec15a33`) → set from day 1
 - 8h auth TTL too short for workday (golf-bd `1ca7202`) → iron-session `maxAge: 604800` (7 days)
 - 401 in components leaves users confused → global fetch wrapper reloads page on 401
+- RealNex note-author names only resolve for the authed user (Mike): `/Crm/users` = `/users/me` and `/Crm/teams` is self-scoped under the single JWT, so a colleague's `userKey` is unresolvable (needs per-user JWTs / service account — deferred). P3.13 `<RecordHistory>` shows "· by {name}" when resolved (dashboard-logged notes authenticate as Mike → "by Mike Hoeck"), else "· logged in RealNex" — never mislabel a colleague's note as Mike, never blank-ambiguous. Not a code bug; API constraint. (Author-name mapper reads the `userName` field, not `name`.)
 
 ## Current Status
 - [x] Phase 1: Foundation + health check — **DEPLOYED & VERIFIED** 2026-05-21
