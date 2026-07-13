@@ -60,6 +60,8 @@ const companyCols = {
   phone: realnexCompanies.phone,
   email: realnexCompanies.email,
   website: realnexCompanies.website,
+  leaseExpiry: realnexCompanies.leaseExpiry,
+  sqFt: realnexCompanies.sqFt,
   tenant: realnexCompanies.tenant,
   prospect: realnexCompanies.prospect,
 };
@@ -75,12 +77,14 @@ const contactCols = {
   mobile: realnexContacts.mobile,
   companyKey: realnexContacts.companyKey,
   companyName: realnexContacts.companyName,
+  leaseExpiry: realnexContacts.leaseExpiry,
+  sqFt: realnexContacts.sqFt,
   tenant: realnexContacts.tenant,
   prospect: realnexContacts.prospect,
 };
 
-export type CompanyListRow = { key: string; name: string | null; city: string | null; state: string | null; phone: string | null; email: string | null; website: string | null; tenant: boolean | null; prospect: boolean | null };
-export type ContactListRow = { key: string; fullName: string | null; firstName: string | null; lastName: string | null; title: string | null; email: string | null; work: string | null; mobile: string | null; companyKey: string | null; companyName: string | null; tenant: boolean | null; prospect: boolean | null };
+export type CompanyListRow = { key: string; name: string | null; city: string | null; state: string | null; phone: string | null; email: string | null; website: string | null; leaseExpiry: string | null; sqFt: number | null; tenant: boolean | null; prospect: boolean | null };
+export type ContactListRow = { key: string; fullName: string | null; firstName: string | null; lastName: string | null; title: string | null; email: string | null; work: string | null; mobile: string | null; companyKey: string | null; companyName: string | null; leaseExpiry: string | null; sqFt: number | null; tenant: boolean | null; prospect: boolean | null };
 
 /**
  * Companies from the mirror, name-searched (ILIKE contains) and prefix-ranked (names that

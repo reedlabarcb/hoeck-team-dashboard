@@ -47,6 +47,21 @@ export function syncStatusLabel(job: SyncJobLike | null): string {
   return `Synced ${relativeTime(job.completedAt)}${who ? ` · ${who}` : ''}`;
 }
 
+/** Square footage with thousands separators, e.g. 21347 → "21,347". Blank/≤0 → "—". */
+export function formatSqFt(sqFt: number | null | undefined): string {
+  return typeof sqFt === 'number' && sqFt > 0 ? sqFt.toLocaleString('en-US') : '—';
+}
+
+/**
+ * Lease expiration 'YYYY-MM-DD' → "MM/DD/YYYY". Blank/invalid → "—". Parsed by string match (NOT
+ * `new Date`) so a date-only value never shifts a day across timezones.
+ */
+export function formatLeaseExpiry(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : '—';
+}
+
 /**
  * A contact's best display name: full_name, else "first last", else a placeholder.
  * Pure + client-safe (no DB import) — used by both the server queries and the /contacts

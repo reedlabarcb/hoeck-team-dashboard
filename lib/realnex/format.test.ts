@@ -1,5 +1,33 @@
 import { describe, it, expect } from 'vitest';
-import { relativeTime, syncStatusLabel } from './format';
+import { relativeTime, syncStatusLabel, formatSqFt, formatLeaseExpiry } from './format';
+
+describe('formatSqFt', () => {
+  it('adds thousands separators', () => {
+    expect(formatSqFt(21347)).toBe('21,347');
+    expect(formatSqFt(500)).toBe('500');
+    expect(formatSqFt(1234567)).toBe('1,234,567');
+  });
+  it('blank for null/zero/negative', () => {
+    expect(formatSqFt(null)).toBe('—');
+    expect(formatSqFt(undefined)).toBe('—');
+    expect(formatSqFt(0)).toBe('—');
+    expect(formatSqFt(-5)).toBe('—');
+  });
+});
+
+describe('formatLeaseExpiry', () => {
+  it('YYYY-MM-DD -> MM/DD/YYYY (no timezone drift)', () => {
+    expect(formatLeaseExpiry('2027-04-30')).toBe('04/30/2027');
+    expect(formatLeaseExpiry('2024-02-29')).toBe('02/29/2024');
+    expect(formatLeaseExpiry('2027-04-30T00:00:00')).toBe('04/30/2027');
+  });
+  it('blank for null/invalid', () => {
+    expect(formatLeaseExpiry(null)).toBe('—');
+    expect(formatLeaseExpiry(undefined)).toBe('—');
+    expect(formatLeaseExpiry('')).toBe('—');
+    expect(formatLeaseExpiry('nope')).toBe('—');
+  });
+});
 
 describe('relativeTime', () => {
   it('handles missing/invalid', () => {

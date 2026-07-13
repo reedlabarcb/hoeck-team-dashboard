@@ -21,7 +21,7 @@ import { LastSyncedBadge } from '@/components/LastSyncedBadge';
 import { ConnectRealNexBanner } from '@/components/ConnectRealNexBanner';
 import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
 import { useRealnexSyncStatus } from '@/lib/hooks/useRealnexSyncStatus';
-import { contactDisplayName } from '@/lib/realnex/format';
+import { contactDisplayName, formatSqFt, formatLeaseExpiry } from '@/lib/realnex/format';
 
 interface ContactRow {
   key: string;
@@ -34,6 +34,8 @@ interface ContactRow {
   mobile: string | null;
   companyKey: string | null;
   companyName: string | null;
+  leaseExpiry: string | null;
+  sqFt: number | null;
   tenant: boolean | null;
   prospect: boolean | null;
 }
@@ -144,6 +146,8 @@ export default function ContactsPage() {
                       <th className="px-3 py-2 text-left">Name</th>
                       <th className="px-3 py-2 text-left">Title</th>
                       <th className="px-3 py-2 text-left">Company</th>
+                      <th className="px-3 py-2 text-right">SF</th>
+                      <th className="px-3 py-2 text-left">Lease Exp</th>
                       <th className="px-3 py-2 text-left">Email</th>
                       <th className="px-3 py-2 text-left">Phone</th>
                     </tr>
@@ -175,6 +179,8 @@ export default function ContactsPage() {
                             <span className="italic text-gray-400">(no company)</span>
                           )}
                         </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-gray-600">{formatSqFt(c.sqFt)}</td>
+                        <td className="px-3 py-2 tabular-nums text-gray-600">{formatLeaseExpiry(c.leaseExpiry)}</td>
                         <td className="px-3 py-2 text-gray-600">
                           {c.email ? <a href={`mailto:${c.email}`} className="text-blue-700 hover:underline">{c.email}</a> : null}
                         </td>
