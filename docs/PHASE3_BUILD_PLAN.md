@@ -1,6 +1,6 @@
 # Phase 3 — RealNex CRM Integration: Build Plan
 
-**Status:** PLAN FOR REVIEW. No implementation code until Reed approves the phase breakdown.
+**Status:** P3.1–P3.6 BUILT & DEPLOYED (2026-07-13). Read-only mirror + read UIs (P3.5) live; LXD/SF `details` walk added (Option A, migration 0009); note-logging (P3.6 wrapper `appendActivity` + P3.9 Log Note UI/route) built + safety-proven — but the single live test write was **deferred by choice** (Reed opted not to write to the production CRM for a verification-only append; the path is fully built + unit-tested, unexercised-on-prod). Remaining: P3.7 create-company, P3.8 create-contact, P3.11 Workflow 4 export; P3.10 deferred. (Original: PLAN FOR REVIEW — no implementation code until Reed approves the phase breakdown.)
 **Author basis:** `docs/RealNex_API_Discovery.md`, `docs/RealNex_Workflow.md` (Nadya), BUILD_SPEC v3 (Safety Rules + RealNex Workflows + Build Order), MEMORY.md (RealNex Discovery + Key Decisions).
 **Repo state at planning:** `main` @ `9e1b95f`, clean tree.
 
@@ -208,6 +208,7 @@ Dependency order is strict top-to-bottom. **No write capability exists in the co
 - **Tests:** worker upsert idempotency, status route, orphan recovery.
 
 ### P3.5 — Read UIs: `/companies` + `/contacts` (read from mirror)
+**STATUS: COMPLETE & LIVE (2026-07-13)** — both list pages, the shared `resolveEntities` + `GET /api/realnex/resolve`, the keyboard-navigable `<RealNexEntitySearch>` typeahead, and LXD/SF columns (Option A `details` walk, migration 0009) are deployed. Company LXD (`details.userDataFields.userDate1`) VERIFIED = Lease Expiration via a 35/35 internal cross-check vs contacts' named `leaseExpiry`.
 - **Builds:** list pages reading the **mirror** (fast), search/filter, React Query 60s polling +
   refetch-on-focus, `<LastUpdated />`, refresh button, `<ConnectRealNexBanner />` if `REALNEX_API_KEY`
   missing. **Read-only — no create yet.**
@@ -220,6 +221,7 @@ Dependency order is strict top-to-bottom. **No write capability exists in the co
 --- **write capability begins below, behind the P3.1 safety enforcement** ---
 
 ### P3.6 — Create methods in wrapper (`createCompany`, `createContact`, `appendActivity`)
+**STATUS: BUILT & DEPLOYED (2026-07-13)** — added ONLY `appendActivity` (add-only child History; `realnexAppendObjectHistory` path-locked in the client). Wrapper now **13 methods** (12 GET + appendActivity); set-equality + forbidden (incl. move/re-parent) green; plant-and-catch re-verified. **`createCompany`/`createContact` deliberately DEFERRED** to their P3.7/P3.8 forms (minimal write surface — note-logging needs only the append).
 - **Builds:** add EXACTLY those three create methods (no update/delete). Read the `CreateCompany`/
   `CreateContact`/`EditHistory` request schemas from `swagger.json`. Tag created records
   `Source: Dashboard`. Update `safe.test.ts` allowlist (set-equality now includes the 3 creates).
@@ -249,6 +251,7 @@ Dependency order is strict top-to-bottom. **No write capability exists in the co
 - **Tests:** cascade logic, group dropdown source, route.
 
 ### P3.9 — Log History note (LOCAL-FIRST structured entry, no LLM) — the ALLOWED child-append — PRIORITY write feature (see "Scope decision", top)
+**STATUS: BUILT + DEPLOYED (2026-07-13); LIVE TEST WRITE DEFERRED BY CHOICE.** The Log Note UI at `/activities` + `POST /api/realnex/activity` (auth-gated; validates; `eventTypeKey` restricted to the 6 note types; a confirm gate that states the exact target record before writing; audits success AND failure to `activity_feed`) are live and unit-tested (route + UI tests mock the write and pass). Reed deliberately chose NOT to perform the one real production-CRM append for a verification-only write, so the write path is **fully built + unit-tested but unexercised-on-prod** — exercisable later by Reed/Mike/Nadya on their own CRM when comfortable. A Cancel on the confirm screen was verified to write nothing (baselined Procopio stayed `totalCount=0`, parent unchanged).
 - **Builds:** structured "Log Activity" form — Event Type dropdown from lookups
   (Note/Phone Call/Cold Call/Email/Meeting/Other), resolve the parent object key (company/contact)
   first, `appendActivity`. Two-entry activity-feed log. **No field edits to the parent — append only.**
