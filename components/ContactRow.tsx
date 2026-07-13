@@ -1,8 +1,9 @@
 /**
  * <ContactRow> — one row of the /contacts list. Extracted from the list page so the name→detail
  * link is unit-testable. The NAME links to the contact's detail page (/contacts/[key]); the
- * company cell keeps the list's existing search-filter link (not degraded to a not-yet-built
- * detail route — Step 5 unifies navigation).
+ * COMPANY cell links to the company's detail page (/companies/[companyKey]) when the contact is
+ * linked to a mirrored company. A denormalized company name with no key (unlinked) renders as
+ * plain text, never a broken link.
  */
 import Link from 'next/link';
 import { contactDisplayName, formatSqFt, formatLeaseExpiry } from '@/lib/realnex/format';
@@ -40,10 +41,12 @@ export function ContactRow({ contact: c }: { contact: ContactRowData }) {
       </td>
       <td className="px-3 py-2 text-gray-600">{c.title}</td>
       <td className="px-3 py-2">
-        {c.companyName ? (
-          <Link href={`/companies?q=${encodeURIComponent(c.companyName)}`} className="text-blue-700 hover:underline">{c.companyName}</Link>
-        ) : c.companyKey ? (
-          <span className="italic text-gray-400">(unnamed company)</span>
+        {c.companyKey ? (
+          <Link href={`/companies/${encodeURIComponent(c.companyKey)}`} className="text-blue-700 hover:underline">
+            {c.companyName || '(unnamed company)'}
+          </Link>
+        ) : c.companyName ? (
+          <span className="text-gray-600">{c.companyName}</span>
         ) : (
           <span className="italic text-gray-400">(no company)</span>
         )}

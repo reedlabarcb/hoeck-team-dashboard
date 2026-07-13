@@ -29,7 +29,9 @@ describe('CompanyRow', () => {
       </table>,
     );
     const name = screen.getByRole('link', { name: 'Gensler' }) as HTMLAnchorElement;
+    // Regression (P3.13 nav bug): the name links to the detail page by key, NOT /companies?q=.
     expect(name.getAttribute('href')).toBe('/companies/CO1');
+    expect(name.getAttribute('href')).not.toContain('?q=');
     expect(screen.getByText('21,347')).toBeTruthy();
     expect(screen.getByText('04/30/2027')).toBeTruthy();
     const site = screen.getByRole('link', { name: /site/i }) as HTMLAnchorElement;
