@@ -249,3 +249,87 @@ export async function listGroups(): Promise<{ key: string; name: string | null }
     .where(isNull(realnexGroups.deletedAt))
     .orderBy(asc(realnexGroups.name));
 }
+
+// ---- single-record detail reads (P3.13 Record View) — mirror only, by realnex_key ----
+// Fuller field sets than the list cols (address, all flags, groups) for the profile pages. Still
+// curated (no `raw` jsonb). History/notes are NOT here — those are fetched LIVE per view.
+
+const companyDetailCols = {
+  key: realnexCompanies.realnexKey,
+  name: realnexCompanies.companyName,
+  phone: realnexCompanies.phone,
+  fax: realnexCompanies.fax,
+  email: realnexCompanies.email,
+  website: realnexCompanies.website,
+  address: realnexCompanies.address,
+  city: realnexCompanies.city,
+  state: realnexCompanies.state,
+  leaseExpiry: realnexCompanies.leaseExpiry,
+  sqFt: realnexCompanies.sqFt,
+  tenant: realnexCompanies.tenant,
+  prospect: realnexCompanies.prospect,
+  investor: realnexCompanies.investor,
+  agent: realnexCompanies.agent,
+  vendor: realnexCompanies.vendor,
+  personal: realnexCompanies.personal,
+  objectGroups: realnexCompanies.objectGroups,
+  lastActivityAt: realnexCompanies.lastActivityAt,
+};
+
+const contactDetailCols = {
+  key: realnexContacts.realnexKey,
+  fullName: realnexContacts.fullName,
+  firstName: realnexContacts.firstName,
+  lastName: realnexContacts.lastName,
+  title: realnexContacts.title,
+  email: realnexContacts.email,
+  work: realnexContacts.work,
+  mobile: realnexContacts.mobile,
+  home: realnexContacts.home,
+  fax: realnexContacts.fax,
+  website: realnexContacts.website,
+  companyKey: realnexContacts.companyKey,
+  companyName: realnexContacts.companyName,
+  address: realnexContacts.address,
+  leaseExpiry: realnexContacts.leaseExpiry,
+  sqFt: realnexContacts.sqFt,
+  tenant: realnexContacts.tenant,
+  prospect: realnexContacts.prospect,
+  investor: realnexContacts.investor,
+  agent: realnexContacts.agent,
+  vendor: realnexContacts.vendor,
+  personal: realnexContacts.personal,
+  objectGroups: realnexContacts.objectGroups,
+  lastActivityAt: realnexContacts.lastActivityAt,
+};
+
+/** One company from the mirror by realnex_key (not-deleted), or null. Detail-page profile read. */
+export async function getCompanyByKey(key: string) {
+  const rows = await db
+    .select(companyDetailCols)
+    .from(realnexCompanies)
+    .where(and(eq(realnexCompanies.realnexKey, key), isNull(realnexCompanies.deletedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** One contact from the mirror by realnex_key (not-deleted), or null. Detail-page profile read. */
+export async function getContactByKey(key: string) {
+  const rows = await db
+    .select(contactDetailCols)
+    .from(realnexContacts)
+    .where(and(eq(realnexContacts.realnexKey, key), isNull(realnexContacts.deletedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** The by-key row query builders, exported for SQL regression tests (toSQL, no DB execution). */
+export function companyByKeyQuery(key: string) {
+  return db.select(companyDetailCols).from(realnexCompanies).where(and(eq(realnexCompanies.realnexKey, key), isNull(realnexCompanies.deletedAt))).limit(1);
+}
+export function contactByKeyQuery(key: string) {
+  return db.select(contactDetailCols).from(realnexContacts).where(and(eq(realnexContacts.realnexKey, key), isNull(realnexContacts.deletedAt))).limit(1);
+}
+
+export type CompanyDetail = NonNullable<Awaited<ReturnType<typeof getCompanyByKey>>>;
+export type ContactDetail = NonNullable<Awaited<ReturnType<typeof getContactByKey>>>;

@@ -8,6 +8,8 @@ import {
   rankEntities,
   companiesRowsQuery,
   contactsRowsQuery,
+  companyByKeyQuery,
+  contactByKeyQuery,
   type EntityResult,
 } from './queries';
 
@@ -128,6 +130,26 @@ describe('rows query ORDER BY — empty q must not emit "ORDER BY 0"', () => {
     const s = contactsRowsQuery({ q: 'mar' }).toSQL().sql.toLowerCase();
     expect(s).toContain('case when');
     expect(s).not.toMatch(/order by 0\b/);
+  });
+});
+
+// P3.13 Record View: single-record detail reads by realnex_key (mirror only).
+describe('by-key detail queries', () => {
+  it('companyByKeyQuery: WHERE realnex_key = <param> AND not deleted, LIMIT 1', () => {
+    const b = companyByKeyQuery('ABC-123').toSQL();
+    const sql = b.sql.toLowerCase();
+    expect(sql).toContain('"realnex_companies"."realnex_key" =');
+    expect(sql).toContain('"realnex_companies"."deleted_at" is null');
+    expect(sql).toContain('limit');
+    expect(b.params).toContain('ABC-123');
+  });
+  it('contactByKeyQuery: WHERE realnex_key = <param> AND not deleted, LIMIT 1', () => {
+    const b = contactByKeyQuery('XYZ-9').toSQL();
+    const sql = b.sql.toLowerCase();
+    expect(sql).toContain('"realnex_contacts"."realnex_key" =');
+    expect(sql).toContain('"realnex_contacts"."deleted_at" is null');
+    expect(sql).toContain('limit');
+    expect(b.params).toContain('XYZ-9');
   });
 });
 
