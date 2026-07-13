@@ -7,7 +7,7 @@ const NAV = [
   { label: 'Home', href: '/' },
   { label: 'Companies', href: '/companies' },
   { label: 'Contacts', href: '/contacts' },
-  { label: 'Activities', href: '/activities', soon: true },
+  { label: 'Log Note', href: '/activities' },
   { label: 'Files', href: '/files' },
   { label: 'Master Excel', href: '/master-excel' },
   { label: 'RealNex Sync', href: '/realnex' },

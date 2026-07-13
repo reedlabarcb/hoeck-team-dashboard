@@ -64,6 +64,12 @@ export default function ContactsPage() {
   const [group, setGroup] = useState('');
   const { job, isLoading: syncLoading } = useRealnexSyncStatus({ enabled: true });
 
+  // Deep-link support (e.g. the Log Note success "View [name]" link → /contacts?q=<name>). Read
+  // once for the search typeahead's initialQuery; SSR-guarded so it's only a prop, never rendered.
+  const [initialQ] = useState(() =>
+    typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('q') ?? '',
+  );
+
   const contacts = useQuery({
     queryKey: ['realnex', 'contacts', { q, companyKey, group }],
     queryFn: () => fetchContacts(q, companyKey, group),
@@ -105,6 +111,7 @@ export default function ContactsPage() {
             <RealNexEntitySearch
               type="contact"
               placeholder="Search contacts by name or email…"
+              initialQuery={initialQ}
               onQueryChange={setQ}
               onSelect={(e) => setQ(e.displayName)}
               className="flex-1"
