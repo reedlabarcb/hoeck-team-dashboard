@@ -24,7 +24,7 @@
  * `company_name_normalized` <-> the Master Excel client name.
  */
 
-import { pgTable, uuid, text, boolean, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, boolean, jsonb, timestamp, integer, date, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const realnexCompanies = pgTable(
   'realnex_companies',
@@ -74,6 +74,16 @@ export const realnexCompanies = pgTable(
     address: jsonb('address').$type<Record<string, unknown>>(),
     city: text('city'),
     state: text('state'),
+
+    // Lease/space attributes — populated by the per-record /full DETAILS WALK (P3.6), NOT the
+    // /CrmOData/ list feed (which omits them). Sources on /Crm/company/{key}/full:
+    //   lease_expiry <- details.userDataFields.userDate1  (VERIFIED = Lease Expiration 2026-07-13:
+    //                   100% match vs contacts' named leaseExpiry on a 35-company spread sample)
+    //   sq_ft        <- details.currentSf
+    // Nullable on purpose: only ~30-50% of companies have them. See docs +
+    // reference_realnex_lxd_sf_custom_fields. Display-only; RealNex stays source of truth.
+    leaseExpiry: date('lease_expiry'),
+    sqFt: integer('sq_ft'),
 
     // ObjectGroups (the RealNex "Group" memberships) as jsonb; groups are also mirrored
     // in realnex_groups for the Workflow-2 dropdown.

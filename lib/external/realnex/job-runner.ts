@@ -23,7 +23,7 @@ const PROGRESS_WRITE_INTERVAL_MS = 5_000;
 
 /** Progress snapshot the sync worker pushes; JobContext coalesces writes. */
 export interface RealnexProgress {
-  phase: 'companies' | 'contacts' | 'groups' | 'linking';
+  phase: 'companies' | 'contacts' | 'groups' | 'linking' | 'details';
   companiesSynced: number;
   contactsSynced: number;
   groupsSynced: number;
@@ -50,6 +50,10 @@ export interface RealnexSyncResult {
   rateLimitHits: number;
   skippedCompanyKeys: string[];
   durationMs: number;
+  // P3.6 details walk: companies/contacts written a non-null SF or LXD; /full reads skipped.
+  detailCompanies: number;
+  detailContacts: number;
+  detailSkipped: number;
 }
 
 /** INSERT a queued job row. Caller invokes kickOffRealnexSync(row.id) after responding. */
@@ -186,6 +190,10 @@ async function markJobCompleted(jobId: string, r: RealnexSyncResult, rebuildLink
         durationMs: r.durationMs,
         concurrency: resolveConcurrency(),
         rebuildLinks,
+        // P3.6 details walk (SF + LXD enrichment)
+        detailCompanies: r.detailCompanies,
+        detailContacts: r.detailContacts,
+        detailSkipped: r.detailSkipped,
       },
       updatedAt: sql`NOW()`,
       updatedBy: 'realnex_sync',
@@ -248,14 +256,18 @@ export async function kickOffRealnexSync(opts: {
         rateLimitHits: result.rateLimitHits,
         skipped: result.skippedCompanyKeys.length,
         durationMs: result.durationMs,
+        detailCompanies: result.detailCompanies,
+        detailContacts: result.detailContacts,
+        detailSkipped: result.detailSkipped,
       },
-      status: result.skippedCompanyKeys.length > 0 ? 'warn' : 'ok',
+      status: result.skippedCompanyKeys.length > 0 || result.detailSkipped > 0 ? 'warn' : 'ok',
     });
 
     console.log(
       `[realnex-job:${jobId}] done companies=${result.companiesSynced} contacts=${result.contactsSynced} ` +
-        `groups=${result.groupsSynced} links=${result.linksResolved} apiCalls=${result.apiCalls} ` +
-        `rateLimitHits=${result.rateLimitHits} skipped=${result.skippedCompanyKeys.length} duration=${result.durationMs}ms`,
+        `groups=${result.groupsSynced} links=${result.linksResolved} ` +
+        `details(co=${result.detailCompanies},ct=${result.detailContacts},skip=${result.detailSkipped}) ` +
+        `apiCalls=${result.apiCalls} rateLimitHits=${result.rateLimitHits} skipped=${result.skippedCompanyKeys.length} duration=${result.durationMs}ms`,
     );
   } catch (err) {
     console.error(`[realnex-job:${jobId}] FAILED:`, err);

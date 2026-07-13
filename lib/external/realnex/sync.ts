@@ -2,7 +2,7 @@
  * RealNex -> Postgres mirror sync worker (P3.4). READ-ONLY: reads RealNex via the safe
  * wrapper (GET only) and writes to OUR mirror tables. Never writes to RealNex.
  *
- * Four phases (current_phase):
+ * Five phases (current_phase):
  *   1. companies — page /CrmOData/Companies. The OData feed returns the envelope
  *      { "@odata.context":..., "value":[...] } and does SERVER-DRIVEN paging (a page can be
  *      smaller than the requested $top), so we advance $skip by the ACTUAL returned count and
@@ -15,6 +15,10 @@
  *      contact->company link on reads, so this is the only way. Run at bounded concurrency
  *      with backoff; a company that keeps failing is logged-and-skipped (its key recorded in
  *      job metadata), never aborting the whole sync.
+ *   5. details   — the /full enrichment walk (P3.6): for each mirrored company AND contact, GET
+ *      its /full read and write Square Footage + Lease Expiration onto new columns (SF/LXD live
+ *      ONLY on /full, not the OData list feed). ~doubles API volume (~3,000 GETs); same bounded-
+ *      concurrency + backoff + log-and-skip pattern as linking. Still READ-ONLY to RealNex.
  *
  * FIELD CASING: the /CrmOData/ feeds serialize PascalCase (Key, OrganizationId, WebSite, ...)
  * while the /Crm/ endpoints serialize camelCase. lc() lowercases each item's keys so the row
@@ -23,11 +27,12 @@
  * Idempotent: every write is UPSERT/UPDATE keyed by realnex_key, so re-running is safe.
  */
 
-import { and, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { realnexCompanies, realnexContacts, realnexGroups } from '@/lib/db/schema';
-import { listCompanies, listContacts, listGroups, getCompanyContacts } from './safe';
+import { listCompanies, listContacts, listGroups, getCompanyContacts, getCompany, getContact } from './safe';
 import { normalizeCompanyName } from './normalize';
+import { extractCompanyDetail, extractContactDetail } from './details';
 import { withRetry, mapLimit, resolveConcurrency, isRateLimit } from './retry';
 import type { RealNexCompanyListItem, RealNexContactListItem, RealNexGroup } from './types';
 import type { RealnexJobContext, RealnexProgress, RealnexSyncResult } from './job-runner';
@@ -349,6 +354,9 @@ export async function runRealnexSync(opts: {
     totalContacts: null,
   };
   const skippedCompanyKeys: string[] = [];
+  let detailCompanies = 0; // companies the details walk wrote a non-null SF or LXD onto
+  let detailContacts = 0; // contacts likewise
+  let detailSkipped = 0; // /full reads that failed after retries (logged, non-fatal)
   const onRetry = (err: unknown) => {
     if (isRateLimit(err)) counters.rateLimitHits += 1;
   };
@@ -485,10 +493,76 @@ export async function runRealnexSync(opts: {
   });
 
   await report();
-  const durationMs = Date.now() - startedAt;
   console.log(
     `[realnex-sync] linking done: links=${counters.linksResolved} skipped=${skippedCompanyKeys.length} ` +
-      `apiCalls=${counters.apiCalls} rateLimitHits=${counters.rateLimitHits} durationMs=${durationMs}`,
+      `apiCalls=${counters.apiCalls} rateLimitHits=${counters.rateLimitHits}`,
+  );
+
+  // ---- Phase 5: details (/full enrichment walk — SF + LXD onto the mirror) ----
+  // SF/LXD live ONLY on the per-record /full reads (not the OData list feed), so we walk every
+  // mirrored company + contact. Bounded concurrency + backoff + log-and-skip, same as linking.
+  // ~doubles API volume; watch rateLimitHits — dial REALNEX_SYNC_CONCURRENCY down (env, no
+  // redeploy) if it climbs. Idempotent: each row's SF/LXD is (re)written from its /full.
+  counters.phase = 'details';
+  const coKeys = await db
+    .select({ key: realnexCompanies.realnexKey })
+    .from(realnexCompanies)
+    .where(isNull(realnexCompanies.deletedAt));
+  await mapLimit(coKeys, concurrency, async (co) => {
+    try {
+      const full = await withRetry(
+        () => {
+          counters.apiCalls += 1;
+          return getCompany(co.key);
+        },
+        { onRetry },
+      );
+      const d = extractCompanyDetail(full);
+      await db
+        .update(realnexCompanies)
+        .set({ leaseExpiry: d.leaseExpiry, sqFt: d.sqFt, lastSyncRunId: ctx.jobId, updatedAt: sql`NOW()`, updatedBy: sql`'realnex_sync'` })
+        .where(eq(realnexCompanies.realnexKey, co.key));
+      if (d.leaseExpiry || d.sqFt !== null) detailCompanies += 1;
+    } catch (err) {
+      detailSkipped += 1;
+      if (isRateLimit(err)) counters.rateLimitHits += 1;
+      console.error(`[realnex-sync] details: skipping company ${co.key}:`, err instanceof Error ? err.message : err);
+    }
+    await report();
+  });
+
+  const ctKeys = await db
+    .select({ key: realnexContacts.realnexKey })
+    .from(realnexContacts)
+    .where(isNull(realnexContacts.deletedAt));
+  await mapLimit(ctKeys, concurrency, async (ct) => {
+    try {
+      const full = await withRetry(
+        () => {
+          counters.apiCalls += 1;
+          return getContact(ct.key);
+        },
+        { onRetry },
+      );
+      const d = extractContactDetail(full);
+      await db
+        .update(realnexContacts)
+        .set({ leaseExpiry: d.leaseExpiry, sqFt: d.sqFt, lastSyncRunId: ctx.jobId, updatedAt: sql`NOW()`, updatedBy: sql`'realnex_sync'` })
+        .where(eq(realnexContacts.realnexKey, ct.key));
+      if (d.leaseExpiry || d.sqFt !== null) detailContacts += 1;
+    } catch (err) {
+      detailSkipped += 1;
+      if (isRateLimit(err)) counters.rateLimitHits += 1;
+      console.error(`[realnex-sync] details: skipping contact ${ct.key}:`, err instanceof Error ? err.message : err);
+    }
+    await report();
+  });
+
+  await report();
+  const durationMs = Date.now() - startedAt;
+  console.log(
+    `[realnex-sync] phase details done: companies=${detailCompanies} contacts=${detailContacts} ` +
+      `skipped=${detailSkipped} apiCalls=${counters.apiCalls} rateLimitHits=${counters.rateLimitHits} durationMs=${durationMs}`,
   );
 
   return {
@@ -500,5 +574,8 @@ export async function runRealnexSync(opts: {
     rateLimitHits: counters.rateLimitHits,
     skippedCompanyKeys,
     durationMs,
+    detailCompanies,
+    detailContacts,
+    detailSkipped,
   };
 }

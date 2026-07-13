@@ -17,7 +17,7 @@
  * NO optimistic-locking `version` column - RealNex is source of truth.
  */
 
-import { pgTable, uuid, text, boolean, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, boolean, jsonb, timestamp, integer, date, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const realnexContacts = pgTable(
   'realnex_contacts',
@@ -66,6 +66,14 @@ export const realnexContacts = pgTable(
 
     address: jsonb('address').$type<Record<string, unknown>>(),
     mailingAddress: jsonb('mailing_address').$type<Record<string, unknown>>(),
+
+    // Lease/space attributes — populated by the per-record /full DETAILS WALK (P3.6), NOT the
+    // /CrmOData/ list feed. Sources on /Crm/contact/{key}/full (named, reliable fields):
+    //   lease_expiry <- tenantData.space.leaseExpiry
+    //   sq_ft        <- tenantData.space.sqFt
+    // Nullable: only ~30% of contacts have a space. See reference_realnex_lxd_sf_custom_fields.
+    leaseExpiry: date('lease_expiry'),
+    sqFt: integer('sq_ft'),
 
     objectGroups: jsonb('object_groups').$type<unknown[]>().default([]),
 
