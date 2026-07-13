@@ -47,6 +47,15 @@ export function syncStatusLabel(job: SyncJobLike | null): string {
   return `Synced ${relativeTime(job.completedAt)}${who ? ` · ${who}` : ''}`;
 }
 
+/** Format a RealNex address jsonb ({address1,address2,city,state,zipCode}) to one line. "" if empty. */
+export function formatAddress(addr: unknown): string {
+  if (!addr || typeof addr !== 'object') return '';
+  const a = addr as Record<string, unknown>;
+  const g = (k: string) => (typeof a[k] === 'string' ? (a[k] as string).trim() : '');
+  const stateZip = [g('state'), g('zipCode')].filter(Boolean).join(' ');
+  return [g('address1'), g('address2'), g('city'), stateZip].filter(Boolean).join(', ');
+}
+
 /** Square footage with thousands separators, e.g. 21347 → "21,347". Blank/≤0 → "—". */
 export function formatSqFt(sqFt: number | null | undefined): string {
   return typeof sqFt === 'number' && sqFt > 0 ? sqFt.toLocaleString('en-US') : '—';

@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { relativeTime, syncStatusLabel, formatSqFt, formatLeaseExpiry } from './format';
+import { relativeTime, syncStatusLabel, formatSqFt, formatLeaseExpiry, formatAddress } from './format';
+
+describe('formatAddress', () => {
+  it('joins street/city/state/zip, skipping blanks', () => {
+    expect(formatAddress({ address1: '525 B Street', address2: 'Ste 2200', city: 'San Diego', state: 'CA', zipCode: '92101' })).toBe('525 B Street, Ste 2200, San Diego, CA 92101');
+    expect(formatAddress({ address1: '1 Main', city: 'SD', state: 'CA' })).toBe('1 Main, SD, CA');
+  });
+  it('empty string for null / non-object / empty', () => {
+    expect(formatAddress(null)).toBe('');
+    expect(formatAddress(undefined)).toBe('');
+    expect(formatAddress({})).toBe('');
+    expect(formatAddress('nope')).toBe('');
+  });
+});
 
 describe('formatSqFt', () => {
   it('adds thousands separators', () => {
