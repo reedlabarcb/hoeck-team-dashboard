@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { relativeTime, syncStatusLabel, formatSqFt, formatLeaseExpiry, formatAddress } from './format';
+import { relativeTime, syncStatusLabel, formatSqFt, formatLeaseExpiry, formatAddress, normalizeWebsiteUrl } from './format';
+
+describe('normalizeWebsiteUrl', () => {
+  it('prepends https:// when the scheme is missing', () => {
+    expect(normalizeWebsiteUrl('gensler.com')).toBe('https://gensler.com');
+    expect(normalizeWebsiteUrl('http://x.com')).toBe('http://x.com');
+    expect(normalizeWebsiteUrl('https://x.com')).toBe('https://x.com');
+  });
+  it('null for blank/absent', () => {
+    expect(normalizeWebsiteUrl(null)).toBeNull();
+    expect(normalizeWebsiteUrl(undefined)).toBeNull();
+    expect(normalizeWebsiteUrl('   ')).toBeNull();
+  });
+});
 
 describe('formatAddress', () => {
   it('joins street/city/state/zip, skipping blanks', () => {

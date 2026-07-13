@@ -18,22 +18,9 @@ import { LastSyncedBadge } from '@/components/LastSyncedBadge';
 import { ConnectRealNexBanner } from '@/components/ConnectRealNexBanner';
 import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
 import { useRealnexSyncStatus } from '@/lib/hooks/useRealnexSyncStatus';
-import { formatSqFt, formatLeaseExpiry } from '@/lib/realnex/format';
+import { CompanyRow, type CompanyRowData } from '@/components/CompanyRow';
 
-interface CompanyRow {
-  key: string;
-  name: string | null;
-  city: string | null;
-  state: string | null;
-  phone: string | null;
-  email: string | null;
-  website: string | null;
-  leaseExpiry: string | null;
-  sqFt: number | null;
-  tenant: boolean | null;
-  prospect: boolean | null;
-}
-interface CompaniesResponse { companies: CompanyRow[]; total: number }
+interface CompaniesResponse { companies: CompanyRowData[]; total: number }
 interface GroupsResponse { groups: { key: string; name: string | null }[] }
 
 async function fetchCompanies(q: string, group: string): Promise<CompaniesResponse> {
@@ -51,12 +38,6 @@ async function fetchGroups(): Promise<GroupsResponse> {
   return res.json();
 }
 
-function fmtLocation(c: CompanyRow): string {
-  return [c.city, c.state].filter(Boolean).join(', ');
-}
-function normalizeWebsite(url: string): string {
-  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
-}
 
 export default function CompaniesPage() {
   const [q, setQ] = useState('');
@@ -154,31 +135,7 @@ export default function CompaniesPage() {
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {rows.map((c) => (
-                      <tr key={c.key} className="hover:bg-gray-50">
-                        <td className="px-3 py-2">
-                          <span className={c.name ? 'text-gray-900' : 'italic text-gray-400'}>
-                            {c.name || '(unnamed)'}
-                          </span>
-                          {c.tenant && (
-                            <span className="ml-2 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-900">Tenant</span>
-                          )}
-                          {c.prospect && (
-                            <span className="ml-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-900">Prospect</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-gray-600">{fmtLocation(c)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-600">{formatSqFt(c.sqFt)}</td>
-                        <td className="px-3 py-2 tabular-nums text-gray-600">{formatLeaseExpiry(c.leaseExpiry)}</td>
-                        <td className="px-3 py-2 text-gray-600">{c.phone}</td>
-                        <td className="px-3 py-2 text-gray-600">
-                          {c.email ? <a href={`mailto:${c.email}`} className="text-blue-700 hover:underline">{c.email}</a> : null}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          {c.website ? (
-                            <a href={normalizeWebsite(c.website)} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-700 hover:underline">site ↗</a>
-                          ) : null}
-                        </td>
-                      </tr>
+                      <CompanyRow key={c.key} company={c} />
                     ))}
                   </tbody>
                 </table>

@@ -47,6 +47,13 @@ export function syncStatusLabel(job: SyncJobLike | null): string {
   return `Synced ${relativeTime(job.completedAt)}${who ? ` · ${who}` : ''}`;
 }
 
+/** Normalize a website value to an href (prepends https:// when missing). null when blank. */
+export function normalizeWebsiteUrl(url: string | null | undefined): string | null {
+  const u = (url ?? '').trim();
+  if (!u) return null;
+  return /^https?:\/\//i.test(u) ? u : `https://${u}`;
+}
+
 /** Format a RealNex address jsonb ({address1,address2,city,state,zipCode}) to one line. "" if empty. */
 export function formatAddress(addr: unknown): string {
   if (!addr || typeof addr !== 'object') return '';
