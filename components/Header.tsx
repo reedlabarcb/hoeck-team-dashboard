@@ -1,6 +1,7 @@
 'use client';
 
 import { BackupButton } from './BackupButton';
+import { GlobalRecordSearch } from './GlobalRecordSearch';
 
 interface Props {
   userName?: string;
@@ -15,7 +16,11 @@ export function Header({ userName, userEmail }: Props) {
 
   return (
     <header className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
-      <div className="text-sm text-gray-500">{/* breadcrumb area — wired per page later */}</div>
+      <div className="min-w-0 flex-1">
+        <div className="max-w-sm">
+          <GlobalRecordSearch />
+        </div>
+      </div>
       <div className="flex items-center gap-4">
         <BackupButton />
         <div className="flex flex-col text-right">

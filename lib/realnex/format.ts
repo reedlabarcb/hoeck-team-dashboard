@@ -14,6 +14,16 @@ export interface EntityResult {
   email: string | null;
 }
 
+/**
+ * The detail-page URL for a record: contact → /contacts/[key], company → /companies/[key].
+ * The canonical entity→URL mapping — used by the Header global search and the Log Note success
+ * link — so a record link resolves to the record, never drifting back to the list. Pure.
+ */
+export function detailPath(entity: { type: 'contact' | 'company'; key: string }): string {
+  const base = entity.type === 'company' ? '/companies' : '/contacts';
+  return `${base}/${encodeURIComponent(entity.key)}`;
+}
+
 /** Human "5 min ago" style relative time from an ISO string. */
 export function relativeTime(iso: string | null | undefined): string {
   if (!iso) return 'never';

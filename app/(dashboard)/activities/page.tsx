@@ -10,9 +10,9 @@
  * lets the human verify the right PERSON (name + type + company) before anything is written.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
-import type { EntityResult } from '@/lib/realnex/format';
+import { detailPath, type EntityResult } from '@/lib/realnex/format';
 import { REALNEX_EVENT_TYPE } from '@/lib/external/realnex/types';
 
 // [['Note',18],['Phone Call',1],...] — Note first (the default). Single-sourced with the route's
@@ -40,6 +40,21 @@ export default function LogNotePage() {
   const [notes, setNotes] = useState('');
   const [phase, setPhase] = useState<Phase>('compose');
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Pre-fill from a detail page's "Log Note" deep-link (/activities?type=&key=&name=&company=).
+  // An EFFECT (not a useState initializer) so the server render matches the first client render —
+  // no hydration mismatch. This ONLY pre-selects the entity, skipping the SEARCH step; it does not
+  // touch the confirm gate below — a pre-filled entity is reviewed and confirmed exactly like a
+  // searched one (still Review → Confirm & Log before any write).
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const type = p.get('type');
+    const key = p.get('key');
+    const name = p.get('name');
+    if ((type === 'contact' || type === 'company') && key && name) {
+      setEntity({ type, key, displayName: name, companyName: p.get('company') || null, email: null });
+    }
+  }, []);
 
   const eventTypeName = EVENT_TYPES.find(([, k]) => k === eventTypeKey)?.[0] ?? 'Note';
   const trimmedNote = notes.trim();
@@ -79,7 +94,9 @@ export default function LogNotePage() {
 
   // ---- success ----
   if (phase === 'done' && entity) {
-    const href = entity.type === 'company' ? `/companies?q=${encodeURIComponent(entity.displayName)}` : `/contacts?q=${encodeURIComponent(entity.displayName)}`;
+    // Back to the record's detail page — where <RecordHistory> refetches and the new note appears
+    // live. Closes the loop: look up → see history → log a note → back to the record → it's there.
+    const href = detailPath(entity);
     return (
       <div className="mx-auto max-w-2xl p-6">
         <h1 className="text-2xl font-semibold text-gray-900">Log Note</h1>

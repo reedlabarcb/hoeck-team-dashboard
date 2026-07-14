@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { relativeTime, syncStatusLabel, formatSqFt, formatLeaseExpiry, formatAddress, normalizeWebsiteUrl } from './format';
+import { relativeTime, syncStatusLabel, formatSqFt, formatLeaseExpiry, formatAddress, normalizeWebsiteUrl, detailPath } from './format';
 
 describe('normalizeWebsiteUrl', () => {
   it('prepends https:// when the scheme is missing', () => {
@@ -52,6 +52,18 @@ describe('formatLeaseExpiry', () => {
     expect(formatLeaseExpiry(undefined)).toBe('—');
     expect(formatLeaseExpiry('')).toBe('—');
     expect(formatLeaseExpiry('nope')).toBe('—');
+  });
+});
+
+describe('detailPath', () => {
+  it('routes company → /companies/[key] and contact → /contacts/[key]', () => {
+    expect(detailPath({ type: 'company', key: 'CO1' })).toBe('/companies/CO1');
+    expect(detailPath({ type: 'contact', key: 'CT1' })).toBe('/contacts/CT1');
+  });
+  it('never routes to a list (no ?q=) and encodes the key', () => {
+    const p = detailPath({ type: 'company', key: 'A/B C' });
+    expect(p).toBe('/companies/A%2FB%20C');
+    expect(p).not.toContain('?q=');
   });
 });
 
