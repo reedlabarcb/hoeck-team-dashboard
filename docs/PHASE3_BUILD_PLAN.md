@@ -1,6 +1,6 @@
 # Phase 3 — RealNex CRM Integration: Build Plan
 
-**Status:** P3.1–P3.6 BUILT & DEPLOYED (2026-07-13). Read-only mirror + read UIs (P3.5) live; LXD/SF `details` walk added (Option A, migration 0009); note-logging (P3.6 wrapper `appendActivity` + P3.9 Log Note UI/route) built + safety-proven — but the single live test write was **deferred by choice** (Reed opted not to write to the production CRM for a verification-only append; the path is fully built + unit-tested, unexercised-on-prod). Remaining: P3.7 create-company, P3.8 create-contact, P3.11 Workflow 4 export; P3.10 deferred. (Original: PLAN FOR REVIEW — no implementation code until Reed approves the phase breakdown.)
+**Status:** P3.1–P3.6 BUILT & DEPLOYED (2026-07-13). Read-only mirror + read UIs (P3.5) live; LXD/SF `details` walk added (Option A, migration 0009); note-logging (P3.6 wrapper `appendActivity` + P3.9 Log Note UI/route) built + safety-proven — but the single live test write was **deferred by choice** (Reed opted not to write to the production CRM for a verification-only append; the path is fully built + unit-tested, unexercised-on-prod). **P3.13 Record View — contact/company detail pages + live note history + global Header search + Log Note pre-fill — COMPLETE & LIVE 2026-07-14 (HEAD `79f7fce`); all read-only, wrapper stays 13.** Remaining: P3.7 create-company, P3.8 create-contact, P3.11 Workflow 4 export; P3.10 deferred. (Original: PLAN FOR REVIEW — no implementation code until Reed approves the phase breakdown.)
 **Author basis:** `docs/RealNex_API_Discovery.md`, `docs/RealNex_Workflow.md` (Nadya), BUILD_SPEC v3 (Safety Rules + RealNex Workflows + Build Order), MEMORY.md (RealNex Discovery + Key Decisions).
 **Repo state at planning:** `main` @ `9e1b95f`, clean tree.
 
@@ -286,6 +286,41 @@ activity to an existing contact). Reasons for deferral, recorded for the team:
 - **Builds:** enable the nightly sync cron (separate commit after manual verification, Box pattern);
   full E2E on prod; MEMORY.md → Phase 3 `[✓]` with final commit hashes, the workflow→endpoint map,
   E2E results, and Performance Baselines (sync duration, mirror size, list-query latency).
+
+### P3.13 — Record View: detail pages + fast lookup (added after P3.6; not in the original P3.1–P3.12 plan)
+**STATUS: COMPLETE & LIVE (2026-07-14, HEAD `79f7fce`).** The unified "look up any contact/company →
+see their info + lease data + RealNex notes in one place → log a new note" feature. **All READ-ONLY;
+the wrapper stays at 13 methods** (notes are read LIVE via the existing `getObjectHistory`; history is
+NOT synced into the mirror).
+- **Built (5 gated steps):**
+  1. **Data layer** (`8add69c`) — `getCompanyByKey` / `getContactByKey` (by-key mirror reads) +
+     `GET /api/realnex/history?key=&page=` (LIVE `getObjectHistory`; `userKey`→name via cached `listUsers`).
+  2. **`<RecordHistory>`** (`707a04d`) — live notes feed: loading skeleton / notes (type badge · date ·
+     author · subject · body) / empty (+ Log Note) / error+retry / "Load older notes (N remaining)".
+  3. **Contact detail** `/contacts/[key]` (`6725c84`) — mirror profile + LXD/SF + `<RecordHistory>` +
+     Log Note button (→ `/activities` prefilled); graceful "Contact not found"; `/contacts` rows clickable.
+  4. **Company detail** `/companies/[key]` (`52e7231`) — profile + **linked contacts** (each → contact
+     detail) + `<RecordHistory>` + Log Note; `/companies` rows clickable.
+  5. **Global Header search + Log Note pre-fill** (`79f7fce`) — `<GlobalRecordSearch>` (reuses
+     `<RealNexEntitySearch>` type=both) **navigates** to the picked record's detail page; `/activities`
+     reads `type/key/name/company` URL params to **pre-select the entity** (the confirm gate is
+     **UNCHANGED** — pre-fill skips only the search step, never the confirmation; a test asserts a
+     pre-filled entity still passes through Review → Confirm & Log with no write beforehand); the
+     success "View [name]" link returns to the record's detail page where `<RecordHistory>` refetches
+     live → the new note appears. Closes the loop.
+- **Author-name resolution is PARTIAL by API limit** — only the authed user (Mike) resolves
+  (`/Crm/users`=`/users/me`, `/Crm/teams` self-scoped); a colleague's `userKey` is unresolvable under
+  the single JWT. `<RecordHistory>` shows "· by {name}" when resolved, else "· logged in RealNex" —
+  never mislabels a colleague's note as Mike. Not a code bug; documented in MEMORY Lessons Learned.
+- **Nav bug fixed en route (`54c8fcc`):** clicking a company landed on the `/companies` LIST. Root cause:
+  `ContactRow`'s company cell linked to `/companies?q=<name>` (the filtered list) instead of
+  `/companies/[key]` — `CompanyRow` + `ContactProfile` were already correct (confirmed by reproducing
+  that framework + prod-build soft-nav works and the deployed commit was right). Added **`detailPath()`**
+  in `lib/realnex/format.ts` as the canonical entity→URL mapping (Header search + Log Note success link)
+  so a record link can't drift back to a list. Regression tests assert the hrefs are `/[key]`, never `?q=`.
+- **Tracked cleanup (NOT urgent):** route the remaining inline record-links (`CompanyRow`, `ContactRow`,
+  `ContactProfile`, `LinkedContacts`) through `detailPath` too, to make the single source total — pure
+  no-behavior-change consolidation. The nav bug itself is already fixed.
 
 ---
 
