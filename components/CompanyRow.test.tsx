@@ -8,7 +8,9 @@ const c: CompanyRowData = {
   name: 'Gensler',
   city: 'San Diego',
   state: 'CA',
-  address: { address1: '525 B Street', address2: 'Ste 2200', city: 'San Diego', state: 'CA', zipCode: '92101' },
+  // REAL mirror shape: RealNex/OData returns PascalCase sub-fields and the sync stores them verbatim.
+  // (Using camelCase here is what let the test pass while prod showed all dashes.)
+  address: { Address1: '525 B Street', Address2: 'Ste 2200', City: 'San Diego', State: 'CA', Country: 'US', ZipCode: '92101' },
   phone: '619-555-0000',
   email: 'i@x.com',
   website: 'gensler.com',
@@ -66,7 +68,7 @@ describe('CompanyRow', () => {
     render(
       <table>
         <tbody>
-          <CompanyRow company={{ ...c, address: { city: 'San Diego' } }} />
+          <CompanyRow company={{ ...c, address: { City: 'San Diego' } }} />
         </tbody>
       </table>,
     );

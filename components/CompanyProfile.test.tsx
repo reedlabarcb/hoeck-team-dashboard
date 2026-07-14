@@ -11,7 +11,9 @@ const company = {
   fax: null,
   email: 'info@gensler.com',
   website: 'gensler.com',
-  address: { address1: '500 S Figueroa', city: 'Los Angeles', state: 'CA', zipCode: '90071' },
+  // REAL mirror shape: RealNex/OData PascalCase sub-fields, stored verbatim by the sync. (A camelCase
+  // fixture here passed while the live detail page's Address field rendered "—" — false confidence.)
+  address: { Address1: '500 S Figueroa', City: 'Los Angeles', State: 'CA', ZipCode: '90071' },
   city: 'Los Angeles',
   state: 'CA',
   leaseExpiry: '2027-04-30',

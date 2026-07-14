@@ -64,11 +64,21 @@ export function normalizeWebsiteUrl(url: string | null | undefined): string | nu
   return /^https?:\/\//i.test(u) ? u : `https://${u}`;
 }
 
-/** Format a RealNex address jsonb ({address1,address2,city,state,zipCode}) to one line. "" if empty. */
+/**
+ * Format a RealNex address jsonb to one line. "" if empty.
+ *
+ * Key lookup is CASE-INSENSITIVE: RealNex/OData returns (and the mirror stores verbatim) PascalCase
+ * sub-fields — {Address1, Address2, City, State, ZipCode} — while other callers may pass camelCase.
+ * Reading exact camelCase keys silently missed every PascalCase field and returned "" (the
+ * /companies "all dashes" bug). Match by lowercased key so it's source-agnostic.
+ */
 export function formatAddress(addr: unknown): string {
   if (!addr || typeof addr !== 'object') return '';
-  const a = addr as Record<string, unknown>;
-  const g = (k: string) => (typeof a[k] === 'string' ? (a[k] as string).trim() : '');
+  const byLower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(addr as Record<string, unknown>)) {
+    if (typeof v === 'string' && v.trim()) byLower[k.toLowerCase()] = v.trim();
+  }
+  const g = (k: string) => byLower[k.toLowerCase()] ?? '';
   const stateZip = [g('state'), g('zipCode')].filter(Boolean).join(' ');
   return [g('address1'), g('address2'), g('city'), stateZip].filter(Boolean).join(', ');
 }

@@ -18,7 +18,8 @@ const contact = {
   website: null,
   companyKey: 'CO1',
   companyName: 'Gensler',
-  address: { address1: '525 B Street', address2: 'Ste 2200', city: 'San Diego', state: 'CA', zipCode: '92101' },
+  // REAL mirror shape: RealNex/OData PascalCase sub-fields, stored verbatim by the sync (contacts too).
+  address: { Address1: '525 B Street', Address2: 'Ste 2200', City: 'San Diego', State: 'CA', Country: 'US', ZipCode: '92101' },
   leaseExpiry: '2027-04-30',
   sqFt: 21347,
   tenant: true,

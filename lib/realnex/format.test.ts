@@ -15,9 +15,21 @@ describe('normalizeWebsiteUrl', () => {
 });
 
 describe('formatAddress', () => {
-  it('joins street/city/state/zip, skipping blanks', () => {
+  it('joins the REAL RealNex PascalCase shape (Address1/City/State/ZipCode) — the actual mirror jsonb', () => {
+    // This is exactly what RealNex/OData returns and the sync stores verbatim in realnex_companies.address.
+    // Reading camelCase keys missed all of these → "" → the /companies "all dashes" bug. Case-insensitive
+    // lookup must handle it; extra fields (Country/Latitude) are ignored.
+    expect(
+      formatAddress({ Address1: '225 Broadway', Address2: 'Ste 100', City: 'San Diego', State: 'CA', Country: 'US', ZipCode: '92101', Latitude: 32.71 }),
+    ).toBe('225 Broadway, Ste 100, San Diego, CA 92101');
+  });
+  it('also handles camelCase input (source-agnostic)', () => {
     expect(formatAddress({ address1: '525 B Street', address2: 'Ste 2200', city: 'San Diego', state: 'CA', zipCode: '92101' })).toBe('525 B Street, Ste 2200, San Diego, CA 92101');
     expect(formatAddress({ address1: '1 Main', city: 'SD', state: 'CA' })).toBe('1 Main, SD, CA');
+  });
+  it('partial PascalCase address — shows what it has, no stray comma', () => {
+    expect(formatAddress({ City: 'San Diego' })).toBe('San Diego');
+    expect(formatAddress({ Address1: '525 B Street' })).toBe('525 B Street');
   });
   it('empty string for null / non-object / empty', () => {
     expect(formatAddress(null)).toBe('');
