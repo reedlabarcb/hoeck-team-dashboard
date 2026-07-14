@@ -3,13 +3,14 @@
  * The NAME links to the company's detail page (/companies/[key]).
  */
 import Link from 'next/link';
-import { formatSqFt, formatLeaseExpiry, normalizeWebsiteUrl } from '@/lib/realnex/format';
+import { formatSqFt, formatLeaseExpiry, formatAddress, normalizeWebsiteUrl } from '@/lib/realnex/format';
 
 export interface CompanyRowData {
   key: string;
   name: string | null;
   city: string | null;
   state: string | null;
+  address: Record<string, unknown> | null;
   phone: string | null;
   email: string | null;
   website: string | null;
@@ -20,7 +21,9 @@ export interface CompanyRowData {
 }
 
 export function CompanyRow({ company: c }: { company: CompanyRowData }) {
-  const location = [c.city, c.state].filter(Boolean).join(', ');
+  // Full street address (same helper + formatting as the detail page's CompanyProfile). Degrades
+  // gracefully: partial address shows what it has; no address → "—" (formatAddress returns "").
+  const location = formatAddress(c.address);
   const website = normalizeWebsiteUrl(c.website);
   return (
     <tr className="hover:bg-gray-50">
@@ -38,7 +41,10 @@ export function CompanyRow({ company: c }: { company: CompanyRowData }) {
           <span className="ml-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-900">Prospect</span>
         )}
       </td>
-      <td className="px-3 py-2 text-gray-600">{location}</td>
+      <td className="px-3 py-2 text-gray-600">
+        {/* Full address can be long — cap the width and wrap cleanly so it doesn't blow out the table. */}
+        <div className="max-w-xs break-words">{location || '—'}</div>
+      </td>
       <td className="px-3 py-2 text-right tabular-nums text-gray-600">{formatSqFt(c.sqFt)}</td>
       <td className="px-3 py-2 tabular-nums text-gray-600">{formatLeaseExpiry(c.leaseExpiry)}</td>
       <td className="px-3 py-2 text-gray-600">{c.phone}</td>

@@ -57,6 +57,7 @@ const companyCols = {
   name: realnexCompanies.companyName,
   city: realnexCompanies.city,
   state: realnexCompanies.state,
+  address: realnexCompanies.address, // full street address jsonb — the /companies list shows this (P3.13 follow-up)
   phone: realnexCompanies.phone,
   email: realnexCompanies.email,
   website: realnexCompanies.website,
@@ -83,7 +84,7 @@ const contactCols = {
   prospect: realnexContacts.prospect,
 };
 
-export type CompanyListRow = { key: string; name: string | null; city: string | null; state: string | null; phone: string | null; email: string | null; website: string | null; leaseExpiry: string | null; sqFt: number | null; tenant: boolean | null; prospect: boolean | null };
+export type CompanyListRow = { key: string; name: string | null; city: string | null; state: string | null; address: Record<string, unknown> | null; phone: string | null; email: string | null; website: string | null; leaseExpiry: string | null; sqFt: number | null; tenant: boolean | null; prospect: boolean | null };
 export type ContactListRow = { key: string; fullName: string | null; firstName: string | null; lastName: string | null; title: string | null; email: string | null; work: string | null; mobile: string | null; companyKey: string | null; companyName: string | null; leaseExpiry: string | null; sqFt: number | null; tenant: boolean | null; prospect: boolean | null };
 
 /**
