@@ -174,3 +174,21 @@ describe('contactsRowsQuery — P3.5.3 group + company filters', () => {
     expect(s).toContain('order by "realnex_contacts"."full_name"');
   });
 });
+
+// P3.5.2: /companies group filter. The mirror's object_groups jsonb is the REAL RealNex/OData shape
+// — an array of PascalCase {Key, Name}, e.g. [{"Key":"31968254-...","Name":"Regus Space"}] (verified
+// against the live API). So the containment MUST match on the PascalCase "Name" key. This also guards
+// the wiring the group-filter bug exposed: the /companies API route had dropped ?group= entirely
+// (searchCompanies never saw it) — see app/api/realnex/companies/route.test.ts.
+describe('companiesRowsQuery — group filter (P3.5.2)', () => {
+  it('emits object_groups @> jsonb with the group name bound as a PascalCase {Name} param', () => {
+    const built = companiesRowsQuery({ group: 'Regus Space' }).toSQL();
+    expect(built.sql.toLowerCase()).toContain('"realnex_companies"."object_groups" @>');
+    expect(built.params).toContain(JSON.stringify([{ Name: 'Regus Space' }])); // matches [{"Key":..,"Name":..}]
+  });
+  it('empty q WITH a group: orders by name, still no ORDER BY 0', () => {
+    const s = companiesRowsQuery({ group: 'Regus Space' }).toSQL().sql.toLowerCase();
+    expect(s).not.toMatch(/order by 0\b/);
+    expect(s).toContain('order by "realnex_companies"."company_name"');
+  });
+});

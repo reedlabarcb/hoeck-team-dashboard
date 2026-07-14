@@ -1,8 +1,8 @@
 /**
  * GET /api/realnex/companies — search/list companies from the RealNex MIRROR (READ-ONLY).
  *
- * Query params: ?q= (name search), ?limit= (<=100), ?offset=. Reads local Postgres only —
- * no live RealNex call. Powers the /companies list page (P3.5.2).
+ * Query params: ?q= (name search), ?group= (filter by group membership, by name), ?limit= (<=100),
+ * ?offset=. Reads local Postgres only — no live RealNex call. Powers the /companies list page (P3.5.2).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth/session';
@@ -18,6 +18,7 @@ export async function GET(request: NextRequest) {
   const url = new URL(request.url);
   const { companies, total } = await searchCompanies({
     q: url.searchParams.get('q') ?? undefined,
+    group: url.searchParams.get('group') ?? undefined,
     limit: url.searchParams.get('limit') ?? undefined,
     offset: url.searchParams.get('offset') ?? undefined,
   });
