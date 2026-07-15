@@ -10,6 +10,9 @@ import {
   contactsRowsQuery,
   companyByKeyQuery,
   contactByKeyQuery,
+  queryRowsQuery,
+  queryExportRowsQuery,
+  QUERY_EXPORT_MAX,
   type EntityResult,
 } from './queries';
 
@@ -190,5 +193,124 @@ describe('companiesRowsQuery — group filter (P3.5.2)', () => {
     const s = companiesRowsQuery({ group: 'Regus Space' }).toSQL().sql.toLowerCase();
     expect(s).not.toMatch(/order by 0\b/);
     expect(s).toContain('order by "realnex_companies"."company_name"');
+  });
+});
+
+// P3.11 Master Query — composable stackable AND filters. Rendered via toSQL() (no DB). PascalCase
+// assertions read the RAW sql (NOT lowercased) so `->>'City'` casing is actually verified — the whole
+// point after this session's address/group casing bugs.
+describe('Master Query — query layer (P3.11)', () => {
+  it('no filters ⇒ just not-deleted; no lease/sf clauses; ordered by name', () => {
+    const { sql, params } = queryRowsQuery({ entity: 'companies' }).toSQL();
+    const low = sql.toLowerCase();
+    expect(low).toContain('"deleted_at" is null');
+    // NULL-LXD/SF rule: no lease/sf COMPARISON in the WHERE unless that filter is active. (The columns
+    // themselves are in the SELECT list, so assert on the comparison operators, not the bare names.)
+    expect(low).not.toContain('"lease_expiry" >=');
+    expect(low).not.toContain('"lease_expiry" <=');
+    expect(low).not.toContain('"sq_ft" >=');
+    expect(low).not.toContain('"sq_ft" <=');
+    expect(low).toContain('order by "realnex_companies"."company_name"');
+    expect(params).toContain(100); // view default page = MAX_LIMIT
+  });
+
+  it('lease window adds lease_expiry >= / <= (NULL excluded ONLY when active)', () => {
+    const { sql, params } = queryRowsQuery({ entity: 'companies', lxdFrom: '2026-07-15', lxdTo: '2027-07-15' }).toSQL();
+    const low = sql.toLowerCase();
+    expect(low).toContain('"lease_expiry" >=');
+    expect(low).toContain('"lease_expiry" <=');
+    expect(params).toEqual(expect.arrayContaining(['2026-07-15', '2027-07-15']));
+  });
+
+  it('SF range adds sq_ft >= / <= (NULL excluded ONLY when active)', () => {
+    const { sql, params } = queryRowsQuery({ entity: 'companies', sfMin: 10000, sfMax: 50000 }).toSQL();
+    const low = sql.toLowerCase();
+    expect(low).toContain('"sq_ft" >=');
+    expect(low).toContain('"sq_ft" <=');
+    expect(params).toEqual(expect.arrayContaining([10000, 50000]));
+  });
+
+  it('COMPANY location uses the flat city/state columns (no jsonb)', () => {
+    const { sql, params } = queryRowsQuery({ entity: 'companies', city: 'San Diego', state: 'CA' }).toSQL();
+    expect(sql).toContain('"realnex_companies"."city"');
+    expect(sql).toContain('"realnex_companies"."state"');
+    expect(sql).not.toContain("->>'City'"); // companies do NOT read city from jsonb
+    expect(params).toEqual(expect.arrayContaining(['%San Diego%', '%CA%']));
+  });
+
+  it('CONTACT location reads address->>\'City\'/\'State\' (PascalCase jsonb, no flat column)', () => {
+    const { sql, params } = queryRowsQuery({ entity: 'contacts', city: 'San Diego', state: 'CA' }).toSQL();
+    expect(sql).toContain(`"realnex_contacts"."address"->>'City'`);
+    expect(sql).toContain(`"realnex_contacts"."address"->>'State'`);
+    expect(params).toEqual(expect.arrayContaining(['%San Diego%', '%CA%']));
+  });
+
+  it('address-contains searches PascalCase ->> keys (Address1/Address2/City/State/ZipCode)', () => {
+    const { sql, params } = queryRowsQuery({ entity: 'companies', address: 'Broadway' }).toSQL();
+    expect(sql).toContain(`->>'Address1'`);
+    expect(sql).toContain(`->>'Address2'`);
+    expect(sql).toContain(`->>'City'`);
+    expect(sql).toContain(`->>'ZipCode'`);
+    expect(params.filter((p) => p === '%Broadway%').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('flags are OR-within-dimension; unknown flags ignored', () => {
+    const two = queryRowsQuery({ entity: 'companies', flags: ['tenant', 'prospect'] }).toSQL().sql.toLowerCase();
+    expect(two).toContain('"tenant" =');
+    expect(two).toContain('"prospect" =');
+    expect(two).toContain(' or '); // unioned within the dimension
+    const one = queryRowsQuery({ entity: 'companies', flags: ['tenant'] }).toSQL().sql.toLowerCase();
+    expect(one).toContain('"tenant" =');
+    expect(one).not.toContain(' or '); // single flag ⇒ no union
+    const bogus = queryRowsQuery({ entity: 'companies', flags: ['tenant', 'bogus' as never] }).toSQL().sql.toLowerCase();
+    expect(bogus).toContain('"tenant" =');
+    expect(bogus).not.toContain('bogus'); // whitelisted to the 6 real flags
+  });
+
+  it('group filter matches PascalCase {Name}', () => {
+    const { sql, params } = queryRowsQuery({ entity: 'contacts', group: 'Regus Space' }).toSQL();
+    expect(sql.toLowerCase()).toContain('"object_groups" @>');
+    expect(params).toContain(JSON.stringify([{ Name: 'Regus Space' }]));
+  });
+
+  it('q searches company_name (companies) vs full/first/last/email OR (contacts)', () => {
+    const co = queryRowsQuery({ entity: 'companies', q: 'gen' }).toSQL();
+    expect(co.sql.toLowerCase()).toContain('"company_name" ilike');
+    expect(co.params).toContain('%gen%');
+    const ct = queryRowsQuery({ entity: 'contacts', q: 'mar' }).toSQL().sql.toLowerCase();
+    expect(ct).toContain('"full_name" ilike');
+    expect(ct).toContain('"email" ilike');
+    expect(ct).toContain(' or '); // name fields unioned
+  });
+
+  it('STACKS multiple dimensions with AND (contacts + Tenant/Prospect + city + SF range + lease window)', () => {
+    const { sql, params } = queryRowsQuery({
+      entity: 'contacts',
+      flags: ['tenant', 'prospect'],
+      city: 'San Diego',
+      sfMin: 10000,
+      sfMax: 50000,
+      lxdFrom: '2026-07-15',
+      lxdTo: '2027-07-15',
+    }).toSQL();
+    const low = sql.toLowerCase();
+    expect(low).toContain('"deleted_at" is null');
+    expect(sql).toContain(`"realnex_contacts"."address"->>'City'`); // PascalCase contact city
+    expect(low).toContain('"sq_ft" >=');
+    expect(low).toContain('"sq_ft" <=');
+    expect(low).toContain('"lease_expiry" >=');
+    expect(low).toContain('"lease_expiry" <=');
+    expect(low).toContain('"tenant" =');
+    expect(low).toContain('"prospect" =');
+    expect(low).toContain(' and '); // dimensions ANDed
+    expect(low).toContain(' or '); // flags OR'd within their dimension
+    expect(params).toEqual(expect.arrayContaining(['%San Diego%', 10000, 50000, '2026-07-15', '2027-07-15']));
+  });
+
+  it('export query is uncapped (QUERY_EXPORT_MAX), view is capped at 100; backstop is unreachable', () => {
+    const asText = (b: { sql: string; params: unknown[] }) => `${b.sql} ${JSON.stringify(b.params)}`;
+    expect(asText(queryExportRowsQuery({ entity: 'companies' }).toSQL())).toContain('50000');
+    expect(asText(queryRowsQuery({ entity: 'companies' }).toSQL())).toContain('100');
+    expect(QUERY_EXPORT_MAX).toBeGreaterThanOrEqual(50_000); // dataset is ~3,150 total → never truncates
   });
 });

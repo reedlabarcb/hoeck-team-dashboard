@@ -19,9 +19,11 @@
  * data, so sync overwrites freely. (Optimistic locking applies only to dashboard-native
  * data like notes/tags, a later phase.)
  *
- * Lease Expiration / Space Size are NOT here - they don't exist in RealNex (only on the
- * empty `Spaces` entity). Workflow 4 sources them from the Master Excel, joined on
- * `company_name_normalized` <-> the Master Excel client name.
+ * Lease Expiration / Space Size ARE columns here now (`lease_expiry`, `sq_ft`) — populated by the
+ * per-record /full DETAILS WALK (P3.6); see those columns below. (Historically they were absent from
+ * the /CrmOData list feed and Workflow 4 was going to source them from the Master Excel — that plan
+ * is OBSOLETE; they're mirrored directly. `company_name_normalized` remains a best-effort Master-Excel
+ * join key for OTHER Excel data, not for LXD/SF.)
  */
 
 import { pgTable, uuid, text, boolean, jsonb, timestamp, integer, date, index, uniqueIndex } from 'drizzle-orm/pg-core';

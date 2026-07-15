@@ -14,7 +14,7 @@
  * target. The P3.5.1 review gate proves that key round-trips to the right record.
  */
 
-import { and, asc, eq, ilike, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, ilike, isNull, lte, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { realnexCompanies, realnexContacts, realnexGroups } from '@/lib/db/schema';
 import { contactDisplayName, type EntityResult } from './format';
@@ -334,3 +334,155 @@ export function contactByKeyQuery(key: string) {
 
 export type CompanyDetail = NonNullable<Awaited<ReturnType<typeof getCompanyByKey>>>;
 export type ContactDetail = NonNullable<Awaited<ReturnType<typeof getContactByKey>>>;
+
+// ============================================================================
+// Master Query (P3.11 / Workflow 4) — stackable AND filters over the mirror. ONE composed WHERE
+// feeds two consumers: the paginated VIEW and the uncapped EXPORT. READ-ONLY (mirror columns +
+// jsonb; no RealNex calls). Per-entity casing discipline lives in queryCols():
+//   • company city/state = flat columns; contact city/state = address->>'City'/'State' (PascalCase)
+//   • address-contains = PascalCase ->> keys (Address1/Address2/City/State/ZipCode)
+//   • group = object_groups @> [{"Name": …}] (PascalCase, shape verified live); flags = boolean cols
+// NULL lease_expiry / sq_ft are excluded ONLY when that filter is active — a comparison against NULL
+// is NULL (≠ true), so with no lease/SF filter those records still appear (this isn't a lease-only tool).
+// ============================================================================
+
+export type QueryFlag = 'tenant' | 'prospect' | 'investor' | 'agent' | 'vendor' | 'personal';
+const QUERY_FLAGS: readonly QueryFlag[] = ['tenant', 'prospect', 'investor', 'agent', 'vendor', 'personal'];
+
+export interface QueryFilters {
+  entity: 'companies' | 'contacts';
+  q?: string; // name / company / email contains
+  lxdFrom?: string; // 'YYYY-MM-DD' inclusive
+  lxdTo?: string; // 'YYYY-MM-DD' inclusive
+  sfMin?: number;
+  sfMax?: number;
+  city?: string;
+  state?: string;
+  address?: string; // address text contains
+  flags?: QueryFlag[]; // OR within this dimension
+  group?: string; // group NAME
+}
+
+/**
+ * Export backstop: the largest single entity is ~1,872 rows (~3,150 total across both), so this is
+ * unreachable at any realistic mirror size. It exists to bound a runaway export, NOT to truncate real
+ * data — at current scale the export always returns the complete filtered set.
+ */
+export const QUERY_EXPORT_MAX = 50_000;
+
+/** Per-entity column/expression resolver — the ONE place the company/contact casing asymmetry lives. */
+function queryCols(entity: QueryFilters['entity']) {
+  if (entity === 'companies') {
+    return {
+      deletedAt: realnexCompanies.deletedAt,
+      leaseExpiry: realnexCompanies.leaseExpiry,
+      sqFt: realnexCompanies.sqFt,
+      objectGroups: realnexCompanies.objectGroups,
+      address: realnexCompanies.address,
+      city: sql`${realnexCompanies.city}`, // flat column
+      state: sql`${realnexCompanies.state}`, // flat column
+      nameFields: [realnexCompanies.companyName],
+      flags: {
+        tenant: realnexCompanies.tenant, prospect: realnexCompanies.prospect, investor: realnexCompanies.investor,
+        agent: realnexCompanies.agent, vendor: realnexCompanies.vendor, personal: realnexCompanies.personal,
+      },
+    };
+  }
+  return {
+    deletedAt: realnexContacts.deletedAt,
+    leaseExpiry: realnexContacts.leaseExpiry,
+    sqFt: realnexContacts.sqFt,
+    objectGroups: realnexContacts.objectGroups,
+    address: realnexContacts.address,
+    city: sql`${realnexContacts.address}->>'City'`, // contacts have NO flat city column — read the jsonb (PascalCase)
+    state: sql`${realnexContacts.address}->>'State'`,
+    nameFields: [realnexContacts.fullName, realnexContacts.firstName, realnexContacts.lastName, realnexContacts.email],
+    flags: {
+      tenant: realnexContacts.tenant, prospect: realnexContacts.prospect, investor: realnexContacts.investor,
+      agent: realnexContacts.agent, vendor: realnexContacts.vendor, personal: realnexContacts.personal,
+    },
+  };
+}
+
+/** Compose the WHERE: not-deleted AND (only the active filters). Empty filters ⇒ just not-deleted. */
+export function buildQueryWhere(f: QueryFilters) {
+  const c = queryCols(f.entity);
+  const clauses = [isNull(c.deletedAt)];
+
+  const term = (f.q ?? '').trim();
+  if (term) {
+    const like = `%${escapeLike(term)}%`;
+    clauses.push(or(...c.nameFields.map((field) => ilike(field, like)))!);
+  }
+
+  // Lease window — NULL lease_expiry drops automatically (NULL >= X is NULL), so records with no LXD
+  // are excluded ONLY when a lease bound is set.
+  if (f.lxdFrom) clauses.push(gte(c.leaseExpiry, f.lxdFrom));
+  if (f.lxdTo) clauses.push(lte(c.leaseExpiry, f.lxdTo));
+
+  // SF range — same NULL semantics as the lease window.
+  if (f.sfMin != null) clauses.push(gte(c.sqFt, f.sfMin));
+  if (f.sfMax != null) clauses.push(lte(c.sqFt, f.sfMax));
+
+  // Location — city/state resolved per entity (company column vs contact address->>'City'/'State').
+  if (f.city?.trim()) clauses.push(sql`${c.city} ILIKE ${`%${escapeLike(f.city.trim())}%`}`);
+  if (f.state?.trim()) clauses.push(sql`${c.state} ILIKE ${`%${escapeLike(f.state.trim())}%`}`);
+  if (f.address?.trim()) {
+    const like = `%${escapeLike(f.address.trim())}%`;
+    clauses.push(
+      sql`(${c.address}->>'Address1' ILIKE ${like} OR ${c.address}->>'Address2' ILIKE ${like} OR ${c.address}->>'City' ILIKE ${like} OR ${c.address}->>'State' ILIKE ${like} OR ${c.address}->>'ZipCode' ILIKE ${like})`,
+    );
+  }
+
+  // Type flags — OR WITHIN the dimension (union), ANDed with everything else. Unknown flags ignored.
+  const flags = (f.flags ?? []).filter((x): x is QueryFlag => QUERY_FLAGS.includes(x));
+  if (flags.length) clauses.push(or(...flags.map((name) => eq(c.flags[name], true)))!);
+
+  // Group membership — object_groups @> [{"Name": …}] (PascalCase; jsonb payload bound as a param).
+  if (f.group?.trim()) {
+    clauses.push(sql`${c.objectGroups} @> ${JSON.stringify([{ Name: f.group.trim() }])}::jsonb`);
+  }
+
+  return and(...clauses);
+}
+
+/** VIEW rows — paginated (limit ≤ 100, default 100; offset), curated detail columns. For toSQL tests + runQuery. */
+export function queryRowsQuery(f: QueryFilters, opts: { limit?: number | string; offset?: number | string } = {}) {
+  const where = buildQueryWhere(f);
+  const limit = clampLimit(opts.limit, MAX_LIMIT);
+  const offset = clampOffset(opts.offset);
+  return f.entity === 'companies'
+    ? db.select(companyDetailCols).from(realnexCompanies).where(where).orderBy(asc(realnexCompanies.companyName)).limit(limit).offset(offset)
+    : db.select(contactDetailCols).from(realnexContacts).where(where).orderBy(asc(realnexContacts.fullName)).limit(limit).offset(offset);
+}
+
+/** EXPORT rows — the SAME where, uncapped (bounded only by the unreachable QUERY_EXPORT_MAX). For toSQL tests + runQueryExport. */
+export function queryExportRowsQuery(f: QueryFilters) {
+  const where = buildQueryWhere(f);
+  return f.entity === 'companies'
+    ? db.select(companyDetailCols).from(realnexCompanies).where(where).orderBy(asc(realnexCompanies.companyName)).limit(QUERY_EXPORT_MAX)
+    : db.select(contactDetailCols).from(realnexContacts).where(where).orderBy(asc(realnexContacts.fullName)).limit(QUERY_EXPORT_MAX);
+}
+
+/** Count of ALL rows matching the filters (ignores pagination). */
+export async function queryCount(f: QueryFilters): Promise<number> {
+  const where = buildQueryWhere(f);
+  const table = f.entity === 'companies' ? realnexCompanies : realnexContacts;
+  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(table).where(where);
+  return count;
+}
+
+/** VIEW: one page of results + the total match count. */
+export async function runQuery(f: QueryFilters, opts: { limit?: number | string; offset?: number | string } = {}) {
+  const [rows, total] = await Promise.all([queryRowsQuery(f, opts), queryCount(f)]);
+  return { rows, total };
+}
+
+/** EXPORT: every matching row (up to the unreachable backstop) + the total. */
+export async function runQueryExport(f: QueryFilters) {
+  const [rows, total] = await Promise.all([queryExportRowsQuery(f), queryCount(f)]);
+  if (rows.length >= QUERY_EXPORT_MAX) {
+    console.warn(`[master-query] export hit the ${QUERY_EXPORT_MAX}-row backstop — unexpected at current scale; result truncated.`);
+  }
+  return { rows, total };
+}
