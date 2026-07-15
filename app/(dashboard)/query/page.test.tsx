@@ -34,11 +34,12 @@ beforeEach(() => {
   queryUrls = [];
   fetchMock = vi.fn(async (url: string) => {
     const u = String(url);
-    if (u.includes('/api/realnex/query')) {
+    if (u.includes('/api/realnex/query') && !u.includes('/export')) {
       queryUrls.push(u);
       const sp = new URL(u, 'http://test').searchParams;
       const entity = sp.get('entity') === 'contacts' ? 'contacts' : 'companies';
-      const rows = entity === 'companies' ? [COMPANY] : [CONTACT];
+      const empty = sp.get('q') === 'none'; // sentinel for the empty-result path
+      const rows = empty ? [] : entity === 'companies' ? [COMPANY] : [CONTACT];
       return { ok: true, json: async () => ({ rows, total: rows.length, entity }) };
     }
     if (u.includes('/api/realnex/groups')) return { ok: true, json: async () => ({ groups: [{ key: 'g', name: 'Architects' }] }) };
@@ -87,5 +88,16 @@ describe('Master Query page', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'San Diego' })).toBeNull());
     await waitFor(() => expect(lastQueryUrl()).not.toContain('city='));
     expect((screen.getByPlaceholderText('City') as HTMLInputElement).value).toBe('');
+  });
+
+  it('Export button is enabled with results and disabled when the set is empty', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Gensler');
+    expect((screen.getByRole('button', { name: /Export/ }) as HTMLButtonElement).disabled).toBe(false);
+
+    await user.type(screen.getByPlaceholderText('Company name…'), 'none'); // mock → 0 rows
+    await screen.findByText(/No records match/);
+    expect((screen.getByRole('button', { name: /Export/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

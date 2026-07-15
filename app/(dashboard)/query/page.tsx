@@ -68,6 +68,8 @@ function FlagBadges({ row }: { row: Row }) {
 
 export default function MasterQueryPage() {
   const [filters, setFilters] = useState<QueryFilters>(() => emptyFilters('companies'));
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   const results = useQuery({
     queryKey: ['realnex', 'query', filters],
@@ -87,6 +89,31 @@ export default function MasterQueryPage() {
       return { ...f, flags: arr.length ? arr : undefined };
     });
   const applyPreset = (months: number) => set(leaseWindow(months, new Date()));
+
+  // Export the CURRENT filtered set — same filters as the view, so what you see is what you export.
+  async function onExport() {
+    setExporting(true);
+    setExportError('');
+    try {
+      const res = await fetch(`/api/realnex/query/export?${filtersToParams(filters).toString()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const cd = res.headers.get('Content-Disposition') ?? '';
+      const filename = cd.match(/filename="(.+?)"/)?.[1] ?? `master-query-${filters.entity}.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError('Export failed — please try again.');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const chips = filtersToChips(filters);
   const rows = results.data?.rows ?? [];
@@ -191,14 +218,18 @@ export default function MasterQueryPage() {
                   ? `Showing first ${rows.length} of ${total.toLocaleString()} — filter to narrow, or Export for all`
                   : `${total.toLocaleString()} ${entity === 'companies' ? 'companies' : 'contacts'}`}
             </p>
-            <button
-              type="button"
-              disabled
-              title="Excel export arrives in Step 3"
-              className="shrink-0 rounded border border-gray-300 px-3 py-1.5 text-sm text-gray-400"
-            >
-              Export ▾
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              {exportError && <span className="text-xs text-red-600">{exportError}</span>}
+              <button
+                type="button"
+                onClick={onExport}
+                disabled={exporting || results.isLoading || total === 0}
+                title={total === 0 ? 'No records to export' : 'Download the current filtered set as Excel'}
+                className="rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+              >
+                {exporting ? 'Exporting…' : 'Export ▾'}
+              </button>
+            </div>
           </div>
 
           {chips.length > 0 && (
