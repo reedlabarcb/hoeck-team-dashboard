@@ -1,6 +1,6 @@
 # Phase 3 — RealNex CRM Integration: Build Plan
 
-**Status:** P3.1–P3.6 BUILT & DEPLOYED (2026-07-13). Read-only mirror + read UIs (P3.5) live; LXD/SF `details` walk added (Option A, migration 0009); note-logging (P3.6 wrapper `appendActivity` + P3.9 Log Note UI/route) built + safety-proven — but the single live test write was **deferred by choice** (Reed opted not to write to the production CRM for a verification-only append; the path is fully built + unit-tested, unexercised-on-prod). **P3.13 Record View — contact/company detail pages + live note history + global Header search + Log Note pre-fill — COMPLETE & LIVE 2026-07-14 (HEAD `79f7fce`); all read-only, wrapper stays 13.** Remaining: P3.7 create-company, P3.8 create-contact, P3.11 Workflow 4 export; P3.10 deferred. (Original: PLAN FOR REVIEW — no implementation code until Reed approves the phase breakdown.)
+**Status:** P3.1–P3.6 BUILT & DEPLOYED (2026-07-13). Read-only mirror + read UIs (P3.5) live; LXD/SF `details` walk added (Option A, migration 0009); note-logging (P3.6 wrapper `appendActivity` + P3.9 Log Note UI/route) built + safety-proven — but the single live test write was **deferred by choice** (Reed opted not to write to the production CRM for a verification-only append; the path is fully built + unit-tested, unexercised-on-prod). **P3.13 Record View — contact/company detail pages + live note history + global Header search + Log Note pre-fill — COMPLETE & LIVE 2026-07-14 (HEAD `79f7fce`); all read-only, wrapper stays 13.** **P3.11 Master Query (Workflow 4) — /query stackable-filter view + 3-sheet Excel export — COMPLETE & LIVE 2026-07-15 (HEAD `28f7596`); subsumes the original single-purpose lease report; read-only, wrapper 13.** Remaining: P3.7 create-company, P3.8 create-contact; P3.10 deferred. (Original: PLAN FOR REVIEW — no implementation code until Reed approves the phase breakdown.)
 **Author basis:** `docs/RealNex_API_Discovery.md`, `docs/RealNex_Workflow.md` (Nadya), BUILD_SPEC v3 (Safety Rules + RealNex Workflows + Build Order), MEMORY.md (RealNex Discovery + Key Decisions).
 **Repo state at planning:** `main` @ `9e1b95f`, clean tree.
 
@@ -275,8 +275,22 @@ activity to an existing contact). Reasons for deferral, recorded for the team:
   any write. (Option (c), a non-LLM heuristic parser, stays on the table as a no-external-data
   alternative.)
 
-### P3.11 — Workflow 4: Filter + Excel export (locked column order)
-- **Builds:** filter UI over the mirror (Group, lease-expiration range, SF range, Tenant/Prospect),
+### P3.11 — Workflow 4: Filter + Excel export → reframed as "Master Query"
+**STATUS: COMPLETE & LIVE (2026-07-15, HEAD `28f7596`).** Reframed from a single-purpose lease report
+into a general-purpose **Master Query**: one `/query` page that slices the whole mirror by STACKABLE
+AND filters, views results, and exports them (the lease report is just one query here). Filters (all
+optional, AND-stacked): entity toggle (companies|contacts), name search, lease presets (6/12/24mo) +
+custom range, SF min/max, location (city/state/address), type flags (OR-within-dimension), group.
+Composable `buildQueryWhere` + per-entity `queryCols` (company city/state columns vs contact
+`address->>'City'/'State'` PascalCase; address-contains = PascalCase `->>` keys; group = `object_groups
+@> [{Name}]`; flags = boolean cols). NULL lease/SF excluded only when that filter is active. One WHERE
+→ view route (`/api/realnex/query`, paginated + count) + export route (`/api/realnex/query/export`,
+uncapped, 50k backstop) — both forward EVERY param via one `parseQueryFilters` (anti-drift, route-tested).
+**3-sheet export** via `scripts/python/query_export.py` (openpyxl, temp-file spawn like master_excel_read):
+Data (REAL date/int cells) / Quick Reference (totals + counts) / By Topic (by lease quarter + subtotals).
+Removable filter chips = single source of truth; export == the current filter. READ-ONLY; wrapper stays
+13; no migration. Commits `3edf2e5` (query layer) · `8a87fd6` (page + view route) · `28f7596` (export).
+- **Builds (original plan):** filter UI over the mirror (Group, lease-expiration range, SF range, Tenant/Prospect),
   export `.xlsx` with **fixed column order: Company, Contact, Title, Email, Lease Expiration,
   Space Size (SF), Group**. Empty-state messaging per Nadya's doc.
 - **Review gate:** export column order exactly matches; filters correct; clear "no matches" state.
