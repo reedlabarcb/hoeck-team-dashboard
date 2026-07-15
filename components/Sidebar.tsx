@@ -7,6 +7,7 @@ const NAV = [
   { label: 'Home', href: '/' },
   { label: 'Companies', href: '/companies' },
   { label: 'Contacts', href: '/contacts' },
+  { label: 'Query', href: '/query' },
   { label: 'Log Note', href: '/activities' },
   { label: 'Files', href: '/files' },
   { label: 'Master Excel', href: '/master-excel' },

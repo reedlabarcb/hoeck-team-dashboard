@@ -18,6 +18,7 @@ import { and, asc, eq, gte, ilike, isNull, lte, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { realnexCompanies, realnexContacts, realnexGroups } from '@/lib/db/schema';
 import { contactDisplayName, type EntityResult } from './format';
+import { type QueryFilters, type QueryFlag, QUERY_FLAG_KEYS } from './query-filters';
 
 // Re-exported so server callers + tests keep importing them from '@/lib/realnex/queries',
 // while the pure implementation/shape lives in the client-safe format module (single source).
@@ -346,22 +347,9 @@ export type ContactDetail = NonNullable<Awaited<ReturnType<typeof getContactByKe
 // is NULL (≠ true), so with no lease/SF filter those records still appear (this isn't a lease-only tool).
 // ============================================================================
 
-export type QueryFlag = 'tenant' | 'prospect' | 'investor' | 'agent' | 'vendor' | 'personal';
-const QUERY_FLAGS: readonly QueryFlag[] = ['tenant', 'prospect', 'investor', 'agent', 'vendor', 'personal'];
-
-export interface QueryFilters {
-  entity: 'companies' | 'contacts';
-  q?: string; // name / company / email contains
-  lxdFrom?: string; // 'YYYY-MM-DD' inclusive
-  lxdTo?: string; // 'YYYY-MM-DD' inclusive
-  sfMin?: number;
-  sfMax?: number;
-  city?: string;
-  state?: string;
-  address?: string; // address text contains
-  flags?: QueryFlag[]; // OR within this dimension
-  group?: string; // group NAME
-}
+// QueryFilters / QueryFlag / the flag list live in the client-safe ./query-filters module (shared
+// with the /query page + route); re-exported here so server callers can import them from one place.
+export type { QueryFilters, QueryFlag };
 
 /**
  * Export backstop: the largest single entity is ~1,872 rows (~3,150 total across both), so this is
@@ -435,7 +423,7 @@ export function buildQueryWhere(f: QueryFilters) {
   }
 
   // Type flags — OR WITHIN the dimension (union), ANDed with everything else. Unknown flags ignored.
-  const flags = (f.flags ?? []).filter((x): x is QueryFlag => QUERY_FLAGS.includes(x));
+  const flags = (f.flags ?? []).filter((x) => (QUERY_FLAG_KEYS as readonly string[]).includes(x));
   if (flags.length) clauses.push(or(...flags.map((name) => eq(c.flags[name], true)))!);
 
   // Group membership — object_groups @> [{"Name": …}] (PascalCase; jsonb payload bound as a param).
