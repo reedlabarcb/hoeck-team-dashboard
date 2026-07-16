@@ -158,6 +158,88 @@ export interface AppendActivityInput {
   published?: boolean;
 }
 
+// ==========================================================================================
+// WRITE-INPUT shapes (P3.7 / P3.8 create).
+//
+// ⚠️⚠️  CASING INVERSION — READ THIS BEFORE CONSTRUCTING ANY CREATE BODY  ⚠️⚠️
+//   • The RealNex READ side (OData list items, /full reads, and the jsonb we mirror) is PascalCase:
+//       OrganizationId, Address1, Address2, City, State, ZipCode, WebSite …
+//   • The WRITE side (the POST create bodies below) is camelCase — the EXACT INVERSE:
+//       organization, address1, address2, city, state, zipCode, webSite …
+//   A create body written with the read-side PascalCase keys will still serialize + POST "fine",
+//   but RealNex IGNORES the unknown keys and creates a BLANK record — a silent-data-loss bug of
+//   exactly the kind that has bitten this codebase (addresses, group filter). These interfaces match
+//   the CreateCompany / CreateContact swagger schemas VERBATIM (camelCase). Do NOT reuse the
+//   PascalCase read names here, and do NOT hand-write a create body off a read type.
+// ==========================================================================================
+
+/** camelCase address for CREATE bodies (RealNex `EditAddressPrincipal`). NOT the PascalCase read shape. */
+export interface CreateAddressInput {
+  address1?: string;
+  address2?: string;
+  city?: string;
+  state?: string;
+  zipCode?: string;
+  country?: string;
+}
+
+/** The 6 RealNex classification flags — identical keys on both company + contact create bodies. */
+export interface RealNexCreateFlags {
+  investor?: boolean;
+  tenant?: boolean;
+  agent?: boolean;
+  vendor?: boolean;
+  prospect?: boolean;
+  personal?: boolean;
+}
+
+/**
+ * POST /api/v1/Crm/company body — the `CreateCompany` schema (camelCase). The company NAME is
+ * `organization` (the READ side calls it `OrganizationId` — do NOT use that spelling here).
+ * `organization` is the one field our form REQUIRES; the swagger marks nothing required, so the
+ * name-only minimum is OUR rule (enforced in the route/UI). RealNex responds 202 + the created
+ * `Company` (incl. its new `key`) — see the optimistic mirror-upsert note in the route.
+ * (`userKey`/`teamKey` deliberately omitted — records attribute to the JWT's identity = Mike.)
+ */
+export interface CreateCompanyInput extends RealNexCreateFlags {
+  /** REQUIRED (our rule): the company name → serialized as `organization`. */
+  organization: string;
+  subsidiary?: string;
+  phone?: string;
+  fax?: string;
+  email?: string;
+  webSite?: string; // capital S — camelCase per the schema (read side mirrors it as `website`)
+  address?: CreateAddressInput;
+  objectGroups?: string[];
+}
+
+/**
+ * POST /api/v1/Crm/contact body — the `CreateContact` schema (camelCase). Name is `fullName` OR
+ * `firstName`+`lastName`; VALIDATION requires at least one (kept optional at the type level since
+ * it's an either/or). `companyKey` links the new contact to its parent company (the parent's RealNex
+ * key). RealNex responds 202 + the created `Contact` (incl. `key`); that returned object carries NO
+ * native company link, so the route sets `company_key`/`company_name` on the mirror-upsert from the
+ * `companyKey` we sent here.
+ */
+export interface CreateContactInput extends RealNexCreateFlags {
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  title?: string;
+  salutation?: string;
+  greeting?: string;
+  companyKey?: string; // parent company's RealNex key (the link)
+  useCompanyAddress?: boolean;
+  work?: string;
+  mobile?: string;
+  home?: string;
+  fax?: string;
+  email?: string;
+  webSite?: string;
+  address?: CreateAddressInput;
+  objectGroups?: string[];
+}
+
 /** Standard paging args for list endpoints (RealNex declares no defaults — always pass them). */
 export interface RealNexPaging {
   pageNumber?: number;

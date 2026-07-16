@@ -37,6 +37,13 @@
  *   4. safe.test.ts asserts the surface by SET-EQUALITY (adding ANY method fails) + an explicit
  *      forbidden-list (update/delete/put/patch/move/re-parent all toBeUndefined()).
  *
+ * ⚠️ READ vs WRITE CASING — RealNex READS are PascalCase (OrganizationId, Address1, City, WebSite);
+ *    CREATE bodies are camelCase, the EXACT INVERSE (organization, address1, city, webSite). When the
+ *    create wrappers land (P3.7/P3.8: createCompany/createContact) they build camelCase bodies per the
+ *    CreateCompany/CreateContact schemas. NEVER build a create body from a read-side (PascalCase)
+ *    shape — RealNex silently ignores unknown keys and creates a blank record. See the "CASING
+ *    INVERSION" banner in ./types.ts (CreateCompanyInput / CreateContactInput).
+ *
  * Endpoints DELIBERATELY NOT WRAPPED (and never to be — they edit / delete / move / re-parent):
  *   • PUT  /api/v1/Crm/company/{key}            (PutEditCompanyAsync)   — edit company
  *   • PUT  /api/v1/Crm/company/{key}/notes      (PutCompanyNotesAsync)  — edit company notes
