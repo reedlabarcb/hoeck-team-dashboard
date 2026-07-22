@@ -31,8 +31,11 @@ const ALLOWED = [
   'listCompanies',
   'listContacts',
   'getCompanyContacts',
-  // P3.6 — the ONE create (add-only child History append; NO update/delete/move):
+  // P3.6 — add-only child History append (NO update/delete/move):
   'appendActivity',
+  // P3.7/P3.8 — the two record creates (single inline POST; still NO update/delete/move):
+  'createCompany',
+  'createContact',
 ] as const;
 
 const FORBIDDEN = [

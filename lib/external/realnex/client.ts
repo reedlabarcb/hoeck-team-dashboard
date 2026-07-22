@@ -11,20 +11,23 @@
  *
  * WRITE-SAFETY AT THE HTTP LAYER
  * ------------------------------
- * This module exposes exactly TWO functions:
+ * This module exposes exactly FOUR functions:
  *   • realnexGet                 - any read (GET).
- *   • realnexAppendObjectHistory - the ONE write: POST a NEW History child onto an EXISTING
- *                                  object. Its URL is BUILT HERE from objectKey (no caller-
- *                                  supplied path), so it can append a history entry and NOTHING
- *                                  else - it cannot POST to /company, /contact, /group,
- *                                  /history/{key}/object, etc.
- * There is deliberately NO generic verb-taking request function and NO PUT / PATCH / DELETE
- * primitive. So editing, deleting, moving, or re-parenting any RealNex record is UNEXPRESSIBLE
- * in code, not merely policy-forbidden. A PUT/PATCH/DELETE helper - or a generic POST that takes
- * a caller-supplied path - must NEVER be added here. If P3.7/P3.8 add company/contact creation,
- * each gets its own equally-narrow create primitive, reviewed at that time.
+ *   • realnexAppendObjectHistory - append a NEW History child onto an EXISTING object. Its URL is
+ *                                  BUILT HERE from objectKey (no caller-supplied path).
+ *   • postCompany / postContact  - CREATE a NEW top-level company / contact (P3.7/P3.8). Each POSTs
+ *                                  to a HARDCODED path literal (/api/v1/Crm/company | /contact) — no
+ *                                  path composed from input — and only ADDS a new record: neither
+ *                                  reads back, edits, moves, re-parents, nor deletes anything.
+ * A single PRIVATE postJson(path, body) shares the POST boilerplate; it is NOT exported, so nothing
+ * outside this file can supply a path or reach a general write. There is deliberately NO generic
+ * verb-taking request function and NO PUT / PATCH / DELETE primitive — so editing, deleting, moving,
+ * or re-parenting any RealNex record is UNEXPRESSIBLE here, not merely policy-forbidden. A
+ * PUT/PATCH/DELETE helper, a generic exported POST, or a caller-supplied-path POST must NEVER be added.
  * See docs/PHASE3_BUILD_PLAN.md "RealNex Write Safety - Enforced in Code".
  */
+
+import type { CreateCompany, CreateContact, RealNexProblemDetails } from './types';
 
 const REALNEX_BASE = 'https://sync.realnex.com';
 
@@ -36,14 +39,19 @@ export class RealNexNotConfiguredError extends Error {
   }
 }
 
-/** Thrown on a non-2xx RealNex response. Carries status + a (truncated) body for diagnostics. */
+/**
+ * Thrown on a non-2xx RealNex response. Carries status + a (truncated) body for diagnostics, and —
+ * for the create POSTs — the parsed RFC-7807 `problem` (ProblemDetails) when the body was JSON, so
+ * the route/UI can surface title/detail instead of a raw blob.
+ */
 export class RealNexApiError extends Error {
   constructor(
     public status: number,
     public bodyHead: string,
     public path: string,
+    public problem?: RealNexProblemDetails,
   ) {
-    super(`RealNex ${path} -> HTTP ${status}: ${bodyHead.slice(0, 300)}`);
+    super(`RealNex ${path} -> HTTP ${status}: ${(problem?.title ?? bodyHead).slice(0, 300)}`);
     this.name = 'RealNexApiError';
   }
 }
@@ -148,4 +156,72 @@ export async function realnexAppendObjectHistory<T>(objectKey: string, body: unk
   } catch {
     return text as unknown as T;
   }
+}
+
+/**
+ * PRIVATE shared POST helper — auth + a JSON body + ProblemDetails-aware errors. NOT exported: the
+ * only POSTs that exist in this module are realnexAppendObjectHistory + the two create primitives
+ * below, and EACH hardcodes its own path. This helper takes a path, but nothing outside this file can
+ * reach it, so a caller-supplied path or a general write remains impossible. The body is passed
+ * through verbatim (the wrapper builds it camelCase); this helper never reshapes keys.
+ */
+async function postJson<T>(path: string, body: unknown, opts: PostOpts = {}): Promise<T> {
+  const key = requireKey();
+  const res = await fetch(buildUrl(path), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'hoeck-team-dashboard/realnex (CBRE)',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let problem: RealNexProblemDetails | undefined;
+    try {
+      const p = JSON.parse(text);
+      if (p && typeof p === 'object') problem = p as RealNexProblemDetails;
+    } catch {
+      /* non-JSON error body — leave problem undefined, bodyHead still carries the raw text */
+    }
+    throw new RealNexApiError(res.status, text, `POST ${path}`, problem);
+  }
+  if (!text) return undefined as unknown as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as unknown as T;
+  }
+}
+
+function requireCreatedKey(created: { key?: string } | undefined, kind: string): string {
+  const k = created?.key;
+  if (typeof k !== 'string' || !k) {
+    throw new Error(`RealNex create ${kind}: 2xx response carried no record key — cannot confirm the create`);
+  }
+  return k;
+}
+
+/**
+ * CREATE a new Company — POST /api/v1/Crm/company (operationId PostCompanyAsync). The path is a FIXED
+ * string literal (never composed from input); the body is the camelCase `CreateCompany` model built
+ * by the safe wrapper. RealNex responds 202 + the created Company (incl. its new `key`); we return
+ * just the key. This is a create — it adds a NEW top-level record and touches no existing record.
+ */
+export async function postCompany(body: CreateCompany): Promise<{ key: string }> {
+  const created = await postJson<{ key?: string }>('/api/v1/Crm/company', body); // PostCompanyAsync
+  return { key: requireCreatedKey(created, 'company') };
+}
+
+/**
+ * CREATE a new Contact — POST /api/v1/Crm/contact (operationId PostContactAsync). Fixed path literal;
+ * camelCase `CreateContact` body (with `companyKey` set INLINE for the parent link). Returns the new
+ * contact key from the 202 response. A create — adds a NEW record, edits nothing.
+ */
+export async function postContact(body: CreateContact): Promise<{ key: string }> {
+  const created = await postJson<{ key?: string }>('/api/v1/Crm/contact', body); // PostContactAsync
+  return { key: requireCreatedKey(created, 'contact') };
 }

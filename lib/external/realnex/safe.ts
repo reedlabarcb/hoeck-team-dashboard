@@ -1,10 +1,11 @@
 /**
  * RealNex Safe Wrapper — Phase 3.
  *
- * The ONLY module application code uses to touch RealNex. Reads go through `realnexGet`; the one
- * write goes through `realnexAppendObjectHistory` (both from ./client). Those are the ONLY two
- * HTTP primitives that exist — no PUT/PATCH/DELETE, no generic POST — so the list below is the
- * COMPLETE and EXHAUSTIVE contract, enforced BY CONSTRUCTION, not by convention.
+ * The ONLY module application code uses to touch RealNex. Reads go through `realnexGet`; writes go
+ * through `realnexAppendObjectHistory` (append a History child) and `postCompany`/`postContact`
+ * (create a new top-level record) — all path-locked in ./client. There is NO PUT/PATCH/DELETE and NO
+ * generic POST primitive, so the list below is the COMPLETE and EXHAUSTIVE contract, enforced BY
+ * CONSTRUCTION, not by convention.
  *
  * ┌────────────────────────────────────────────────────────────────────────────────────┐
  * │ WHAT THE DASHBOARD CAN DO TO RealNex — the entire contract:                          │
@@ -16,6 +17,10 @@
  * │  ADD A NOTE (1 create): appendActivity — POSTs a NEW History child onto an EXISTING  │
  * │    company/contact (POST /object/{key}/history). CREATES a child activity; does NOT  │
  * │    touch the parent's fields. Nadya's Workflow 3 needs exactly this.                 │
+ * │                                                                                      │
+ * │  CREATE RECORDS (2 creates, P3.7/P3.8): createCompany, createContact — a SINGLE      │
+ * │    INLINE POST /Crm/company | /Crm/contact that ADDS a new top-level record. Creates │
+ * │    a new record; touches NO existing record. camelCase body (inverse of read side).  │
  * │                                                                                      │
  * │ WHAT THE DASHBOARD CAN *NEVER* DO — not now, not ever, and NOT EXPRESSIBLE in code:  │
  * │  • EDIT / MODIFY any field on any existing company, contact, history, or group       │
@@ -29,9 +34,11 @@
  * └────────────────────────────────────────────────────────────────────────────────────┘
  *
  * Enforced in FOUR independent layers:
- *   1. HTTP client (./client) exposes only realnexGet + realnexAppendObjectHistory (path-LOCKED
- *      to /object/{key}/history) — edit/delete/move/re-parent are UNEXPRESSIBLE, not just banned.
- *   2. This wrapper exports EXACTLY the 13 methods listed above — nothing that mutates a parent.
+ *   1. HTTP client (./client) exposes only realnexGet + realnexAppendObjectHistory + postCompany +
+ *      postContact — each POST path-LOCKED to a fixed endpoint (no caller-supplied path) — so
+ *      edit/delete/move/re-parent are UNEXPRESSIBLE, not just banned.
+ *   2. This wrapper exports EXACTLY the 15 methods listed above — 12 reads + 3 creates; nothing that
+ *      edits, deletes, or moves an existing record.
  *   3. .husky/pre-commit greps forbidden method names + verbs (incl. move/re-parent) outside
  *      lib/external/, and blocks any raw sync.realnex.com reference outside this dir.
  *   4. safe.test.ts asserts the surface by SET-EQUALITY (adding ANY method fails) + an explicit
@@ -69,7 +76,7 @@
  *          "RealNex Write Safety — Enforced in Code"; docs/RealNex_API_Discovery.md.
  */
 
-import { realnexGet, realnexAppendObjectHistory } from './client';
+import { realnexGet, realnexAppendObjectHistory, postCompany, postContact } from './client';
 import type {
   RealNexClientInfo,
   RealNexGroupPage,
@@ -83,6 +90,14 @@ import type {
   RealNexContactListItem,
   RealNexContactListItemPage,
   AppendActivityInput,
+  CreateCompany,
+  CreateContact,
+  CreateCompanyInput,
+  CreateContactInput,
+  CreateAddressInput,
+  EditAddressPrincipal,
+  RealNexCreateFlags,
+  CreateResult,
 } from './types';
 
 const enc = encodeURIComponent;
@@ -237,9 +252,104 @@ export function appendActivity(objectKey: string, input: AppendActivityInput): P
   return realnexAppendObjectHistory<unknown>(objectKey, body);
 }
 
-// createCompany / createContact are intentionally NOT here — note-logging doesn't need them, and
-// every write method is risk on a live CRM. They belong with their forms (P3.7/P3.8) and would get
-// their own narrow create primitives + a safe.test set-equality update if/when those are built.
+// ----- Create RECORDS (P3.7/P3.8) — create-only: a NEW top-level company/contact via a SINGLE
+//       INLINE POST (address nested, flags booleans, companyKey inline, objectGroups string[]). NO
+//       edit/delete/move/re-parent; touches no existing record. Bodies are camelCase — the INVERSE of
+//       the PascalCase read side (see ./types.ts "CASING INVERSION"). -----
 
-/** Read methods + the single create (appendActivity). Bumped from phase-3.4-readonly (P3.6). */
-export const __SAFE_WRAPPER_VERSION = 'phase-3.6-append-activity';
+const CREATE_FLAG_KEYS = ['investor', 'tenant', 'agent', 'vendor', 'prospect', 'personal'] as const;
+
+/** Only set flags the caller explicitly turned on (true); omit the rest so the server defaults them. */
+function flagBody(input: RealNexCreateFlags): Partial<RealNexCreateFlags> {
+  const out: Partial<RealNexCreateFlags> = {};
+  for (const f of CREATE_FLAG_KEYS) if (input[f] === true) out[f] = true;
+  return out;
+}
+
+/**
+ * Build the INLINE EditAddressPrincipal from our CreateAddressInput — only the six fields our form
+ * exposes; latitude/longitude/timeZoneKey/company are omitted so the server defaults/geocodes. Returns
+ * undefined when nothing meaningful was entered (so we omit `address` entirely rather than send {}).
+ */
+function toAddressBody(a?: CreateAddressInput): EditAddressPrincipal | undefined {
+  if (!a) return undefined;
+  const out: EditAddressPrincipal = {};
+  for (const k of ['address1', 'address2', 'city', 'state', 'zipCode', 'country'] as const) {
+    const v = a[k]?.trim();
+    if (v) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * createCompany — CREATE a new company (single inline POST /api/v1/Crm/company). Maps our
+ * CreateCompanyInput → the camelCase CreateCompany body: `organization` (the name), inline address,
+ * inline flags, inline objectGroups. `organization` is REQUIRED at runtime (not just in TS). Returns
+ * the new key. userKey/teamKey are left UNSET → RealNex attributes the record to the JWT identity
+ * (Mike) — the documented single-identity tradeoff; we have no configured user/team key to thread.
+ */
+export async function createCompany(input: CreateCompanyInput): Promise<CreateResult> {
+  const organization = input.organization?.trim();
+  if (!organization) throw new Error('createCompany: organization (company name) is required');
+  const address = toAddressBody(input.address);
+  const body: CreateCompany = {
+    organization,
+    ...(input.subsidiary?.trim() ? { subsidiary: input.subsidiary.trim() } : {}),
+    ...(input.phone?.trim() ? { phone: input.phone.trim() } : {}),
+    ...(input.fax?.trim() ? { fax: input.fax.trim() } : {}),
+    ...(input.email?.trim() ? { email: input.email.trim() } : {}),
+    ...(input.webSite?.trim() ? { webSite: input.webSite.trim() } : {}),
+    ...flagBody(input),
+    ...(address ? { address } : {}),
+    ...(input.objectGroups?.length ? { objectGroups: input.objectGroups } : {}),
+  };
+  const { key } = await postCompany(body);
+  return { key, warnings: [] };
+}
+
+/**
+ * createContact — CREATE a new contact (single inline POST /api/v1/Crm/contact). Maps our
+ * CreateContactInput → the camelCase CreateContact body: name (fullName OR firstName/lastName),
+ * `companyKey` INLINE (the parent link — no separate call), work/mobile/home/fax inline (a contact has
+ * NO `phone`), inline flags, inline objectGroups. Name is REQUIRED at runtime. `useCompanyAddress`
+ * true → the inline `address` is OMITTED (inherit from the company) AND a companyKey is REQUIRED (a
+ * contact cannot inherit an address from a company it isn't linked to) — throws otherwise.
+ */
+export async function createContact(input: CreateContactInput): Promise<CreateResult> {
+  const fullName = input.fullName?.trim();
+  const firstName = input.firstName?.trim();
+  const lastName = input.lastName?.trim();
+  if (!fullName && !firstName && !lastName) {
+    throw new Error('createContact: a name is required (fullName, or firstName and/or lastName)');
+  }
+  if (input.useCompanyAddress && !input.companyKey?.trim()) {
+    throw new Error(
+      'createContact: useCompanyAddress requires a companyKey — a contact cannot inherit an address from a company it is not linked to',
+    );
+  }
+  const address = input.useCompanyAddress ? undefined : toAddressBody(input.address);
+  const body: CreateContact = {
+    ...(fullName ? { fullName } : {}),
+    ...(firstName ? { firstName } : {}),
+    ...(lastName ? { lastName } : {}),
+    ...(input.title?.trim() ? { title: input.title.trim() } : {}),
+    ...(input.salutation?.trim() ? { salutation: input.salutation.trim() } : {}),
+    ...(input.greeting?.trim() ? { greeting: input.greeting.trim() } : {}),
+    ...(input.companyKey?.trim() ? { companyKey: input.companyKey.trim() } : {}),
+    ...(input.useCompanyAddress ? { useCompanyAddress: true } : {}),
+    ...flagBody(input),
+    ...(input.work?.trim() ? { work: input.work.trim() } : {}),
+    ...(input.mobile?.trim() ? { mobile: input.mobile.trim() } : {}),
+    ...(input.home?.trim() ? { home: input.home.trim() } : {}),
+    ...(input.fax?.trim() ? { fax: input.fax.trim() } : {}),
+    ...(input.email?.trim() ? { email: input.email.trim() } : {}),
+    ...(input.webSite?.trim() ? { webSite: input.webSite.trim() } : {}),
+    ...(address ? { address } : {}),
+    ...(input.objectGroups?.length ? { objectGroups: input.objectGroups } : {}),
+  };
+  const { key } = await postContact(body);
+  return { key, warnings: [] };
+}
+
+/** Read methods + the 3 creates (appendActivity + createCompany + createContact). */
+export const __SAFE_WRAPPER_VERSION = 'phase-3.7-create-company-contact';

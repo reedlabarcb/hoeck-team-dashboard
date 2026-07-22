@@ -240,6 +240,101 @@ export interface CreateContactInput extends RealNexCreateFlags {
   objectGroups?: string[];
 }
 
+// ---- API WIRE BODIES — mirror the swagger CreateCompany / CreateContact / EditAddressPrincipal
+// VERBATIM (camelCase). The Create*Input types above are OUR form shapes; the wrappers map them into
+// THESE, and the primitives are typed to these so the camelCase-only guardrail checks the real
+// contract. Everything is INLINE (address nested, flags booleans, companyKey inline, objectGroups
+// string[]) — there is NO addressKey, NO `phone` on a contact, NO create-then-attach. ----
+
+/** RealNex `EditAddressPrincipal` — the INLINE address object on both create bodies (verbatim). */
+export interface EditAddressPrincipal {
+  address1?: string;
+  address2?: string;
+  city?: string;
+  state?: string;
+  zipCode?: string;
+  country?: string;
+  latitude?: number;
+  longitude?: number;
+  timeZoneKey?: number;
+  company?: string;
+}
+
+/** POST /api/v1/Crm/company body — the `CreateCompany` schema verbatim (20 props, camelCase). */
+export interface CreateCompany {
+  userKey?: string;
+  teamKey?: string;
+  organization?: string; // the company NAME (camelCase; the READ side calls it OrganizationId)
+  subsidiary?: string;
+  address?: EditAddressPrincipal;
+  investor?: boolean;
+  tenant?: boolean;
+  agent?: boolean;
+  vendor?: boolean;
+  prospect?: boolean;
+  personal?: boolean;
+  phone?: string; // company HAS phone; a contact does NOT (contact uses work/mobile/home)
+  fax?: string;
+  email?: string;
+  webSite?: string;
+  doNotCall?: boolean;
+  doNotEmail?: boolean;
+  doNotFax?: boolean;
+  doNotMail?: boolean;
+  objectGroups?: string[];
+}
+
+/** POST /api/v1/Crm/contact body — the `CreateContact` schema verbatim (28 props, camelCase). */
+export interface CreateContact {
+  userKey?: string;
+  teamKey?: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  salutation?: string;
+  greeting?: string;
+  title?: string;
+  companyKey?: string; // the parent-company link — set INLINE on create (no separate call)
+  useCompanyAddress?: boolean;
+  address?: EditAddressPrincipal;
+  investor?: boolean;
+  tenant?: boolean;
+  agent?: boolean;
+  vendor?: boolean;
+  prospect?: boolean;
+  personal?: boolean;
+  work?: string; // a contact's phones are work/mobile/home/fax — there is NO `phone` field
+  fax?: string;
+  mobile?: string;
+  home?: string;
+  email?: string;
+  webSite?: string;
+  doNotCall?: boolean;
+  doNotEmail?: boolean;
+  doNotFax?: boolean;
+  doNotMail?: boolean;
+  objectGroups?: string[];
+}
+
+/** RFC-7807 ProblemDetails — RealNex returns this on 4xx/5xx; surfaced via RealNexApiError.problem. */
+export interface RealNexProblemDetails {
+  type?: string;
+  title?: string;
+  status?: number;
+  detail?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Result of a create: the new record `key` + best-effort follow-up `warnings`. In v1 the create is a
+ * SINGLE inline POST, so warnings is normally empty — it's reserved for a future groups-attach
+ * fallback (POST /group/{key}/members) if the live-write step shows inline `objectGroups` don't attach.
+ */
+export interface CreateResult {
+  key: string;
+  warnings: string[];
+}
+
 /** Standard paging args for list endpoints (RealNex declares no defaults — always pass them). */
 export interface RealNexPaging {
   pageNumber?: number;
