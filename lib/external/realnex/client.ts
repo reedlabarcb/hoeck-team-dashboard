@@ -56,6 +56,22 @@ export class RealNexApiError extends Error {
   }
 }
 
+/**
+ * Thrown by the create WRAPPERS (safe.ts createCompany/createContact) when a business/shape guard
+ * fails — empty organization, missing name, useCompanyAddress without companyKey. Distinct from
+ * RealNexApiError (an actual RealNex HTTP failure) so routes map guard failures → 400 and RealNex
+ * failures → 4xx-passthrough/502. Carries an optional `field` for a clean field-level 400 body.
+ */
+export class RealNexValidationError extends Error {
+  constructor(
+    message: string,
+    public field?: string,
+  ) {
+    super(message);
+    this.name = 'RealNexValidationError';
+  }
+}
+
 function requireKey(): string {
   const raw = process.env.REALNEX_API_KEY;
   if (!raw) throw new RealNexNotConfiguredError();

@@ -76,7 +76,7 @@
  *          "RealNex Write Safety — Enforced in Code"; docs/RealNex_API_Discovery.md.
  */
 
-import { realnexGet, realnexAppendObjectHistory, postCompany, postContact } from './client';
+import { realnexGet, realnexAppendObjectHistory, postCompany, postContact, RealNexValidationError } from './client';
 import type {
   RealNexClientInfo,
   RealNexGroupPage,
@@ -290,7 +290,7 @@ function toAddressBody(a?: CreateAddressInput): EditAddressPrincipal | undefined
  */
 export async function createCompany(input: CreateCompanyInput): Promise<CreateResult> {
   const organization = input.organization?.trim();
-  if (!organization) throw new Error('createCompany: organization (company name) is required');
+  if (!organization) throw new RealNexValidationError('createCompany: organization (company name) is required', 'organization');
   const address = toAddressBody(input.address);
   const body: CreateCompany = {
     organization,
@@ -320,11 +320,12 @@ export async function createContact(input: CreateContactInput): Promise<CreateRe
   const firstName = input.firstName?.trim();
   const lastName = input.lastName?.trim();
   if (!fullName && !firstName && !lastName) {
-    throw new Error('createContact: a name is required (fullName, or firstName and/or lastName)');
+    throw new RealNexValidationError('createContact: a name is required (fullName, or firstName and/or lastName)', 'name');
   }
   if (input.useCompanyAddress && !input.companyKey?.trim()) {
-    throw new Error(
+    throw new RealNexValidationError(
       'createContact: useCompanyAddress requires a companyKey — a contact cannot inherit an address from a company it is not linked to',
+      'useCompanyAddress',
     );
   }
   const address = input.useCompanyAddress ? undefined : toAddressBody(input.address);
