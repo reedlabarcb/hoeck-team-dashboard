@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@/lib/auth/session', () => ({ getSession: vi.fn() }));
+vi.mock('@/lib/flags', () => ({ isRealnexCreateEnabled: vi.fn() }));
 vi.mock('@/lib/external/realnex/safe', () => ({ createContact: vi.fn() }));
 vi.mock('@/lib/realnex/create-mirror', () => ({ upsertCreatedContact: vi.fn() }));
 vi.mock('@/lib/activity', () => ({ logActivity: vi.fn(async () => {}) }));
 
 import { POST } from './route';
 import { getSession } from '@/lib/auth/session';
+import { isRealnexCreateEnabled } from '@/lib/flags';
 import { createContact } from '@/lib/external/realnex/safe';
 import { upsertCreatedContact } from '@/lib/realnex/create-mirror';
 import { logActivity } from '@/lib/activity';
@@ -18,8 +20,19 @@ const authed = () => (getSession as any).mockResolvedValue({ user: { id: 'user-1
 
 beforeEach(() => {
   vi.clearAllMocks();
+  (isRealnexCreateEnabled as any).mockReturnValue(true); // flag ON for the create tests
   (createContact as any).mockResolvedValue({ key: 'CT-NEW-1', warnings: [] });
   (upsertCreatedContact as any).mockResolvedValue(undefined);
+});
+
+describe('feature flag', () => {
+  it('404 when OFF — before auth AND before the wrapper', async () => {
+    (isRealnexCreateEnabled as any).mockReturnValue(false);
+    const res = await POST(mkReq({ fullName: 'A B' }));
+    expect(res.status).toBe(404);
+    expect(getSession).not.toHaveBeenCalled();
+    expect(createContact).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/realnex/contact', () => {

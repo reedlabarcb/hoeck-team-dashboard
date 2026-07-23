@@ -8,6 +8,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { DashboardClientShell } from './_shell';
 import { getSession } from '@/lib/auth/session';
+import { isRealnexCreateEnabled } from '@/lib/flags';
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
@@ -17,7 +18,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   }
 
   return (
-    <DashboardClientShell>
+    <DashboardClientShell realnexCreateEnabled={isRealnexCreateEnabled()}>
       <div className="flex min-h-screen w-full bg-gray-50">
         <Sidebar />
         <div className="flex flex-1 flex-col">

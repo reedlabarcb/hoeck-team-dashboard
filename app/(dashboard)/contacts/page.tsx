@@ -22,6 +22,7 @@ import { ConnectRealNexBanner } from '@/components/ConnectRealNexBanner';
 import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
 import { useRealnexSyncStatus } from '@/lib/hooks/useRealnexSyncStatus';
 import { ContactRow, type ContactRowData } from '@/components/ContactRow';
+import { AddContact } from '@/components/AddContact';
 
 interface ContactsResponse { contacts: ContactRowData[]; total: number }
 interface GroupsResponse { groups: { key: string; name: string | null }[] }
@@ -81,9 +82,12 @@ export default function ContactsPage() {
             {contacts.data ? `${total.toLocaleString()} contacts` : 'RealNex contacts'} &middot; from the local mirror
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <LastSyncedBadge />
-          <LastUpdated query={contacts} />
+        <div className="flex items-start gap-3">
+          <AddContact />
+          <div className="flex flex-col items-end gap-1">
+            <LastSyncedBadge />
+            <LastUpdated query={contacts} />
+          </div>
         </div>
       </div>
 

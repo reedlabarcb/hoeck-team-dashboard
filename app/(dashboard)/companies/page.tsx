@@ -19,6 +19,7 @@ import { ConnectRealNexBanner } from '@/components/ConnectRealNexBanner';
 import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
 import { useRealnexSyncStatus } from '@/lib/hooks/useRealnexSyncStatus';
 import { CompanyRow, type CompanyRowData } from '@/components/CompanyRow';
+import { AddCompany } from '@/components/AddCompany';
 
 interface CompaniesResponse { companies: CompanyRowData[]; total: number }
 interface GroupsResponse { groups: { key: string; name: string | null }[] }
@@ -78,9 +79,12 @@ export default function CompaniesPage() {
             {companies.data ? `${total.toLocaleString()} companies` : 'RealNex companies'} &middot; from the local mirror
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <LastSyncedBadge />
-          <LastUpdated query={companies} />
+        <div className="flex items-start gap-3">
+          <AddCompany />
+          <div className="flex flex-col items-end gap-1">
+            <LastSyncedBadge />
+            <LastUpdated query={companies} />
+          </div>
         </div>
       </div>
 

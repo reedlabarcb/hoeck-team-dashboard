@@ -10,6 +10,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth/session';
+import { isRealnexCreateEnabled } from '@/lib/flags';
 import { createContact } from '@/lib/external/realnex/safe';
 import { validateCreateContactInput } from '@/lib/realnex/create-input';
 import { upsertCreatedContact } from '@/lib/realnex/create-mirror';
@@ -19,6 +20,10 @@ import { logActivity } from '@/lib/activity';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
+  // Feature-dark: with the flag off there is NO reachable write path — 404 BEFORE auth/validation.
+  if (!isRealnexCreateEnabled()) {
+    return NextResponse.json({ error: 'not_found' }, { status: 404 });
+  }
   const session = await getSession();
   if (!session.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
