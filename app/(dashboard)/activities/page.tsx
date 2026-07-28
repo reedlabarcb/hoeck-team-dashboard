@@ -37,6 +37,7 @@ function TypeBadge({ type }: { type: 'contact' | 'company' }) {
 export default function LogNotePage() {
   const [entity, setEntity] = useState<EntityResult | null>(null);
   const [eventTypeKey, setEventTypeKey] = useState<number>(DEFAULT_EVENT_TYPE);
+  const [subject, setSubject] = useState('');
   const [notes, setNotes] = useState('');
   const [phase, setPhase] = useState<Phase>('compose');
   const [errorMsg, setErrorMsg] = useState('');
@@ -69,7 +70,7 @@ export default function LogNotePage() {
       const res = await fetch('/api/realnex/activity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ objectKey: entity.key, objectType: entity.type, eventTypeKey, notes: trimmedNote }),
+        body: JSON.stringify({ objectKey: entity.key, objectType: entity.type, eventTypeKey, ...(subject.trim() ? { subject: subject.trim() } : {}), notes: trimmedNote }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -87,6 +88,7 @@ export default function LogNotePage() {
   function reset() {
     setEntity(null);
     setEventTypeKey(DEFAULT_EVENT_TYPE);
+    setSubject('');
     setNotes('');
     setErrorMsg('');
     setPhase('compose');
@@ -172,6 +174,20 @@ export default function LogNotePage() {
             </div>
 
             <div>
+              <label htmlFor="subject" className="mb-1 block text-sm font-medium text-gray-700">
+                Subject <span className="font-normal text-gray-400">(optional)</span>
+              </label>
+              <input
+                id="subject"
+                type="text"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="Leave blank to use the event type as the headline…"
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 focus:border-gray-500 focus:outline-none"
+              />
+            </div>
+
+            <div>
               <label htmlFor="note" className="mb-1 block text-sm font-medium text-gray-700">Note</label>
               <textarea
                 id="note"
@@ -206,6 +222,18 @@ export default function LogNotePage() {
           {entity.type === 'contact' && entity.companyName && (
             <p className="mt-0.5 text-sm text-gray-600">Company: {entity.companyName}</p>
           )}
+          <div className="mt-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Subject</div>
+            <div className="mt-1 text-sm text-gray-900">
+              {subject.trim() ? (
+                subject.trim()
+              ) : (
+                <span className="text-gray-500">
+                  {eventTypeName} <span className="text-xs">(default — the event type)</span>
+                </span>
+              )}
+            </div>
+          </div>
           <div className="mt-3">
             <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Note</div>
             <blockquote className="mt-1 whitespace-pre-wrap rounded border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900">

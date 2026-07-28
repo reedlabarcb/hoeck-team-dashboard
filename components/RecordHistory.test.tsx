@@ -55,6 +55,26 @@ describe('RecordHistory', () => {
     expect(screen.getByText('Notes (2)')).toBeTruthy();
   });
 
+  it('suppresses a subject that duplicates the note body (P3.6-poisoned notes); keeps a distinct one', async () => {
+    const longNote = 'Rory has 4 children, oldest of which is 15 will be going to LCC. Has three daughters ages 9, 11, 13.';
+    const poisonedSubject = `${longNote.slice(0, 79)}…`; // what the old deriveSubject wrote into subject
+    vi.stubGlobal('fetch', vi.fn(async () => ok({
+      totalCount: 2,
+      pageNumber: 1,
+      items: [
+        { historyKey: 'p1', eventTypeName: 'Meeting', subject: poisonedSubject, notes: longNote, date: '2026-07-28T00:00:00', userName: 'Mike Hoeck' },
+        { historyKey: 'd1', eventTypeName: 'Note', subject: 'Q3 renewal terms', notes: 'discussed pricing', date: '2026-07-28T00:00:00', userName: null },
+      ],
+    })));
+    renderEl(<RecordHistory objectKey="K1" />);
+    // Poisoned note: the body renders; the truncated-prefix subject headline does NOT.
+    await screen.findByText(longNote);
+    expect(screen.queryByText(poisonedSubject)).toBeNull();
+    // Genuinely distinct subject: both the headline and the body render.
+    expect(screen.getByText('Q3 renewal terms')).toBeTruthy();
+    expect(screen.getByText('discussed pricing')).toBeTruthy();
+  });
+
   it('empty: shows the empty state + a Log Note link when a href is given', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ok({ totalCount: 0, pageNumber: 1, items: [] })));
     renderEl(<RecordHistory objectKey="K1" logNoteHref="/activities?type=company&key=K1&name=Procopio" />);

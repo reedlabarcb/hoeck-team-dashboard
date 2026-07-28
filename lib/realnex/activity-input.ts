@@ -29,15 +29,22 @@ function toEventTypeKey(raw: unknown): number {
   return NaN;
 }
 
+/** Reverse of REALNEX_EVENT_TYPE: numeric event-type key → display name (e.g. 2 → "Meeting"). */
+const EVENT_TYPE_NAME: Record<number, string> = Object.fromEntries(
+  Object.entries(REALNEX_EVENT_TYPE).map(([name, key]) => [key, name] as const),
+);
+
 /**
- * Derive a subject when none is supplied: the note's first line, trimmed, capped ~80 chars.
- * Step 3 (the Log Note UI) finalizes subject handling; this is a safe server-side fallback so the
- * History always has a headline.
+ * The subject when the user leaves the Subject field blank: the EVENT-TYPE NAME (e.g. "Meeting"),
+ * or "Note" if the key is somehow unmapped.
+ *
+ * It must NEVER be derived from the note body. The old behavior used the note's first 80 chars as
+ * the subject, which meant RealNex permanently stored a truncated COPY of the note in the subject
+ * field (and RecordHistory then rendered the note twice — headline + body). A short type label is a
+ * safe headline that can never duplicate the body.
  */
-export function deriveSubject(notes: string): string {
-  const firstLine = notes.split(/\r?\n/)[0].trim();
-  if (!firstLine) return 'Note';
-  return firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
+export function defaultSubject(eventTypeKey: number): string {
+  return EVENT_TYPE_NAME[eventTypeKey] ?? 'Note';
 }
 
 /** Validate + normalize the request body. Returns the clean ActivityInput or the first error. */
@@ -64,7 +71,7 @@ export function validateActivityInput(raw: unknown): ValidationResult {
   if (!notes) return { ok: false, field: 'notes', error: 'notes is required' };
 
   const subjectRaw = typeof b.subject === 'string' ? b.subject.trim() : '';
-  const subject = subjectRaw || deriveSubject(notes);
+  const subject = subjectRaw || defaultSubject(eventTypeKey);
 
   return { ok: true, value: { objectKey, objectType: b.objectType, eventTypeKey, subject, notes } };
 }

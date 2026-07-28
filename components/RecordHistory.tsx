@@ -34,6 +34,31 @@ function noteDate(iso: string | null): string {
   return formatLeaseExpiry(iso);
 }
 
+/**
+ * True when the subject headline should be SUPPRESSED because it adds nothing over the type badge
+ * or the body:
+ *   - empty
+ *   - equal to the event-type name (the badge already shows that)
+ *   - a prefix / near-duplicate of the notes body — this retro-cleans notes written BEFORE the P3.6
+ *     fix, where the note's first ~80 chars (+ "…") were poisoned into the subject field. We can't
+ *     rewrite those RealNex records, but we can stop rendering the duplicate headline.
+ * Case-insensitive; tolerant of the trailing "…" truncation. A genuinely distinct, user-authored
+ * subject is kept.
+ */
+export function isRedundantSubject(
+  subject: string | null | undefined,
+  notes: string | null | undefined,
+  eventTypeName: string | null | undefined,
+): boolean {
+  if (!subject) return true;
+  const s = subject.trim().replace(/[.…]+$/, '').trim().toLowerCase(); // drop trailing ellipsis/dots
+  if (!s) return true;
+  if (s === (eventTypeName ?? 'Note').trim().toLowerCase()) return true; // badge already shows the type
+  const n = (notes ?? '').trim().toLowerCase();
+  if (!n) return false; // a real subject with no body → keep it
+  return n === s || n.startsWith(s);
+}
+
 export function RecordHistory({ objectKey, logNoteHref }: Props) {
   const q = useInfiniteQuery({
     queryKey: ['realnex', 'history', objectKey],
@@ -98,7 +123,9 @@ export function RecordHistory({ objectKey, logNoteHref }: Props) {
                   <span className="tabular-nums">{noteDate(n.date)}</span>
                   <span>· {n.userName ? `by ${n.userName}` : 'logged in RealNex'}</span>
                 </div>
-                {n.subject && <div className="text-sm font-medium text-gray-900">{n.subject}</div>}
+                {n.subject && !isRedundantSubject(n.subject, n.notes, n.eventTypeName) && (
+                  <div className="text-sm font-medium text-gray-900">{n.subject}</div>
+                )}
                 {n.notes && <div className="mt-0.5 whitespace-pre-wrap text-sm text-gray-700">{n.notes}</div>}
               </li>
             ))}
