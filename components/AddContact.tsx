@@ -12,6 +12,7 @@ import { useFeatureFlags } from '@/components/FeatureFlags';
 import { CreateModalShell } from '@/components/create/CreateModalShell';
 import { useCreateRecord } from '@/components/create/useCreateRecord';
 import { RealNexEntitySearch } from '@/components/RealNexEntitySearch';
+import { AddCompanyDialog } from '@/components/AddCompany';
 import { retryMayDuplicate } from '@/lib/realnex/create-response';
 import type { CreateContactInput } from '@/lib/external/realnex/types';
 
@@ -72,6 +73,12 @@ function AddContactDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const [showOptional, setShowOptional] = useState(false);
   const [f, setF] = useState<CreateContactInput>({});
   const [companyName, setCompanyName] = useState(''); // display only; companyKey is the link
+  const [companyOpen, setCompanyOpen] = useState(false); // nested company-create dialog (W1→W2)
+  const [pendingCompanyName, setPendingCompanyName] = useState(''); // prefill from the typed search text
+  // A company created DURING this contact flow. Deliberately NOT cleared when the contact create
+  // fails: the company is already permanent in RealNex (we have no delete), so a retry must attach to
+  // it rather than mint a duplicate.
+  const [createdCompany, setCreatedCompany] = useState<{ key: string; name: string } | null>(null);
   const mutation = useCreateRecord('contact');
   const outcome = mutation.data;
 
@@ -90,6 +97,15 @@ function AddContactDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     // Can't inherit an address from a company that's no longer linked.
     setF((p) => ({ ...p, companyKey: undefined, useCompanyAddress: p.useCompanyAddress ? undefined : p.useCompanyAddress }));
     setCompanyName('');
+  }
+
+  /** The new company landed: close the nested dialog and attach it by the RETURNED key. Every field
+   *  already typed into this contact form is untouched — AddContactDialog never unmounted. */
+  function handleCompanyCreated(o: { key: string; name: string; warnings: string[] }) {
+    setCompanyOpen(false);
+    setCreatedCompany({ key: o.key, name: o.name });
+    setCompanyName(o.name);
+    set({ companyKey: o.key });
   }
 
   function submit() {
@@ -128,10 +144,33 @@ function AddContactDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     );
 
   return (
-    <CreateModalShell onClose={onClose} title="Add Contact" footer={footer}>
+    <CreateModalShell onClose={onClose} title="Add Contact" footer={footer} closeOnEsc={!companyOpen}>
+      {/* Nested company-create dialog (P3.9 W1→W2 chaining). Rendered HERE, inside the contact
+          dialog, so AddContactDialog never unmounts and everything typed so far survives the detour.
+          It's the same AddCompanyDialog used on /companies — same permanent-write confirm gate, not a
+          fork — and the contact keeps its OWN confirm below: two irreversible writes, two gates. */}
+      {companyOpen && (
+        <AddCompanyDialog
+          onClose={() => setCompanyOpen(false)}
+          onCreated={handleCompanyCreated}
+          initialOrganization={pendingCompanyName}
+        />
+      )}
+
       {outcome && outcome.kind !== 'success' && (
         <div className={`mb-3 rounded border px-3 py-2 text-sm ${ambiguous ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-red-200 bg-red-50 text-red-800'}`} role="alert">
           {outcome.message}
+        </div>
+      )}
+
+      {/* ORPHAN GUARD: the company write succeeded and the contact write didn't. The company is
+          permanent (no delete capability), so say so plainly and keep it attached — a retry must land
+          the contact on THIS company instead of creating a second one. */}
+      {outcome && outcome.kind !== 'success' && createdCompany && (
+        <div className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <span className="font-medium">{createdCompany.name}</span> was created in RealNex — the contact
+          was not. It&apos;s still selected below, so retrying attaches the contact to it. Don&apos;t
+          create the company again.
         </div>
       )}
 
@@ -151,13 +190,30 @@ function AddContactDialog({ onClose, onCreated }: { onClose: () => void; onCreat
             <label className={LABEL}>Company</label>
             {f.companyKey ? (
               <div className="flex items-center justify-between rounded border border-gray-300 bg-gray-50 px-2 py-1.5 text-sm">
-                <span className="text-gray-900">{companyName || f.companyKey}</span>
+                <span className="text-gray-900">
+                  {companyName || f.companyKey}
+                  {createdCompany?.key === f.companyKey && (
+                    <span className="ml-2 rounded-full border border-green-200 bg-green-50 px-1.5 py-0.5 text-[10px] font-medium text-green-800">
+                      just created
+                    </span>
+                  )}
+                </span>
                 <button type="button" onClick={clearCompany} className="text-xs text-blue-700 hover:underline">
                   change
                 </button>
               </div>
             ) : (
-              <RealNexEntitySearch type="company" placeholder="Search a company…" onSelect={(e) => pickCompany(e.key, e.displayName)} onClear={clearCompany} />
+              <RealNexEntitySearch
+                type="company"
+                placeholder="Search a company…"
+                onSelect={(e) => pickCompany(e.key, e.displayName)}
+                onClear={clearCompany}
+                createNewLabel="company"
+                onCreateNew={(typed) => {
+                  setPendingCompanyName(typed);
+                  setCompanyOpen(true);
+                }}
+              />
             )}
           </div>
           <div>

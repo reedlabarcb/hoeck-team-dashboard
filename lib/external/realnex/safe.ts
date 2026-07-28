@@ -328,9 +328,13 @@ export async function createContact(input: CreateContactInput): Promise<CreateRe
       'useCompanyAddress',
     );
   }
+  // RealNex does NOT compose FullName from firstName/lastName on create — send only first/last and the
+  // record's own FullName lands NULL (the dashboard then has to mask it with a first+last fallback).
+  // Compose it here when the caller didn't supply one, so RealNex holds a real display name.
+  const composedFullName = fullName || [firstName, lastName].filter(Boolean).join(' ') || undefined;
   const address = input.useCompanyAddress ? undefined : toAddressBody(input.address);
   const body: CreateContact = {
-    ...(fullName ? { fullName } : {}),
+    ...(composedFullName ? { fullName: composedFullName } : {}),
     ...(firstName ? { firstName } : {}),
     ...(lastName ? { lastName } : {}),
     ...(input.title?.trim() ? { title: input.title.trim() } : {}),

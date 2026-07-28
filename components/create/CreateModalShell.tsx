@@ -12,16 +12,23 @@ interface Props {
   title: string;
   children: ReactNode;
   footer: ReactNode;
+  /**
+   * Esc-to-close. Set false while a NESTED dialog is stacked on top (P3.9 company-from-contact
+   * chaining) — both shells listen on `window`, so one Esc would otherwise dismiss both and throw
+   * away the in-progress form underneath.
+   */
+  closeOnEsc?: boolean;
 }
 
-export function CreateModalShell({ onClose, title, children, footer }: Props) {
+export function CreateModalShell({ onClose, title, children, footer, closeOnEsc = true }: Props) {
   useEffect(() => {
+    if (!closeOnEsc) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, closeOnEsc]);
 
   return (
     <div

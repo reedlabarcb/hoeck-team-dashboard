@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { FeatureFlagsProvider } from '@/components/FeatureFlags';
@@ -9,10 +9,23 @@ import { FeatureFlagsProvider } from '@/components/FeatureFlags';
 // selects a fixed company, so these tests exercise AddContact's own logic (the companyKey link
 // and the useCompanyAddress rule), not the search widget.
 vi.mock('@/components/RealNexEntitySearch', () => ({
-  RealNexEntitySearch: ({ onSelect }: { onSelect: (e: { key: string; displayName: string }) => void }) => (
-    <button type="button" onClick={() => onSelect({ key: 'CO-123', displayName: 'Acme Corp' })}>
-      pick-company
-    </button>
+  RealNexEntitySearch: ({
+    onSelect,
+    onCreateNew,
+  }: {
+    onSelect: (e: { key: string; displayName: string }) => void;
+    onCreateNew?: (typed: string) => void;
+  }) => (
+    <>
+      <button type="button" onClick={() => onSelect({ key: 'CO-123', displayName: 'Acme Corp' })}>
+        pick-company
+      </button>
+      {/* Stands in for the real dropdown's "+ Create new company" row (its own rendering — on zero
+          matches and below results — is covered in RealNexEntitySearch.test.tsx). */}
+      <button type="button" onClick={() => onCreateNew?.('Typed New Co')}>
+        create-new-company
+      </button>
+    </>
   ),
 }));
 
@@ -28,6 +41,25 @@ function mkFetch(status = 200, body: unknown = { key: 'CT-1', warnings: [] }) {
     return { ok: status < 400, status, json: async () => body };
   });
 }
+/**
+ * Endpoint-routing fetch for the chaining tests: the company create and the contact create are two
+ * separate writes, so each needs its own status/body (that's how the orphan case is reproduced).
+ */
+function mkRouter(o: { companyStatus?: number; companyBody?: unknown; contactStatus?: number; contactBody?: unknown } = {}) {
+  return vi.fn(async (url: string, init: any) => {
+    const u = String(url);
+    posts.push({ url: u, body: init?.body ? JSON.parse(init.body) : undefined });
+    if (u.includes('/api/realnex/company')) {
+      const s = o.companyStatus ?? 200;
+      return { ok: s < 400, status: s, json: async () => o.companyBody ?? { key: 'CO-NEW-9', warnings: [] } };
+    }
+    const s = o.contactStatus ?? 200;
+    return { ok: s < 400, status: s, json: async () => o.contactBody ?? { key: 'CT-1', warnings: [] } };
+  });
+}
+const companyDialog = () => screen.getByRole('dialog', { name: 'Add Company' });
+const orgInput = () => screen.getByPlaceholderText('e.g. Full Swing Golf') as HTMLInputElement;
+
 function renderIt(flag = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -153,5 +185,116 @@ describe('AddContact — company picker + useCompanyAddress rule', () => {
     expect(posts).toHaveLength(1);
     resolve();
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+});
+
+describe('AddContact — inline company create (P3.9 W1→W2 chaining)', () => {
+  const addContact = () => screen.getByRole('button', { name: /Add Contact/ });
+  const createNew = () => screen.getByRole('button', { name: 'create-new-company' });
+
+  it('opens the company dialog prefilled with the typed name, writing nothing yet', async () => {
+    vi.stubGlobal('fetch', mkRouter());
+    const user = userEvent.setup();
+    renderIt();
+    await user.click(addContact());
+    await user.type(firstNameInput(), 'Jane');
+    await user.click(createNew());
+
+    expect(companyDialog()).toBeTruthy();
+    expect(orgInput().value).toBe('Typed New Co'); // prefilled from what was typed into the picker
+    expect(posts).toHaveLength(0); // nothing written yet — the confirm gate is still ahead
+  });
+
+  it('attaches the RETURNED key, preserves every contact field, and still requires the contact confirm', async () => {
+    vi.stubGlobal('fetch', mkRouter());
+    const user = userEvent.setup();
+    renderIt();
+    await user.click(addContact());
+
+    // Fill the contact, including the optional section.
+    await user.type(firstNameInput(), 'Jane');
+    await user.type(screen.getAllByRole('textbox')[1], 'Doe');
+    await user.click(screen.getByRole('button', { name: /Add title, contact info/i }));
+    await user.type(screen.getAllByRole('textbox')[2], 'VP Real Estate'); // Title
+    await user.type(screen.getByPlaceholderText('Street'), '525 B Street');
+
+    // Detour through the nested company create.
+    await user.click(createNew());
+    await user.click(within(companyDialog()).getByRole('button', { name: /Continue/ }));
+    await user.click(screen.getByRole('button', { name: /Create company/ }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add Company' })).toBeNull());
+
+    // Company attached and flagged as new.
+    expect(screen.getByText('Typed New Co')).toBeTruthy();
+    expect(screen.getByText('just created')).toBeTruthy();
+
+    // EVERY field typed before the detour survived it (the whole point of the feature).
+    expect((screen.getAllByRole('textbox')[0] as HTMLInputElement).value).toBe('Jane');
+    expect((screen.getAllByRole('textbox')[1] as HTMLInputElement).value).toBe('Doe');
+    expect(screen.getByDisplayValue('VP Real Estate')).toBeTruthy();
+    expect((screen.getByPlaceholderText('Street') as HTMLInputElement).value).toBe('525 B Street');
+
+    // Exactly ONE write so far — the company. The contact was NOT auto-submitted.
+    expect(posts).toHaveLength(1);
+    expect(posts[0].url).toContain('/api/realnex/company');
+
+    // Two irreversible writes, two confirmations: the contact keeps its own gate.
+    await user.click(screen.getByRole('button', { name: /Continue/ }));
+    expect(screen.getByText(/creates a NEW contact/i)).toBeTruthy();
+    expect(posts).toHaveLength(1); // still nothing written on the contact
+    await user.click(screen.getByRole('button', { name: /Create contact/ }));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1].url).toContain('/api/realnex/contact');
+    expect(posts[1].body.companyKey).toBe('CO-NEW-9'); // linked by the key the create RETURNED
+  });
+
+  it('contact failure after a company success KEEPS the company attached and explains (no duplicate on retry)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mkRouter({ contactStatus: 502, contactBody: { error: 'realnex_write_failed', status: 500, problem: { detail: 'upstream boom' } } }),
+    );
+    const user = userEvent.setup();
+    renderIt();
+    await user.click(addContact());
+    await user.type(firstNameInput(), 'Jane');
+
+    await user.click(createNew());
+    await user.click(within(companyDialog()).getByRole('button', { name: /Continue/ }));
+    await user.click(screen.getByRole('button', { name: /Create company/ }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add Company' })).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: /Continue/ }));
+    await user.click(screen.getByRole('button', { name: /Create contact/ }));
+
+    // The company is permanent in RealNex — say so, and keep it selected so a retry attaches to it.
+    await waitFor(() => expect(screen.getByText(/was created in RealNex/i)).toBeTruthy());
+    expect(screen.getAllByText(/Typed New Co/).length).toBeGreaterThan(0); // never silently cleared
+    expect(screen.getByRole('dialog', { name: 'Add Contact' })).toBeTruthy(); // stays open to retry
+  });
+
+  it('company-create failure stays in the nested dialog and leaves the contact form untouched behind it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mkRouter({ companyStatus: 502, companyBody: { error: 'realnex_write_failed', status: 500, problem: { detail: 'upstream boom' } } }),
+    );
+    const user = userEvent.setup();
+    renderIt();
+    await user.click(addContact());
+    await user.type(firstNameInput(), 'Jane');
+
+    await user.click(createNew());
+    await user.click(within(companyDialog()).getByRole('button', { name: /Continue/ }));
+    await user.click(screen.getByRole('button', { name: /Create company/ }));
+
+    // Error surfaces INSIDE the nested dialog, which stays open.
+    await waitFor(() => expect(screen.getByText(/MAY have been created/)).toBeTruthy());
+    expect(companyDialog()).toBeTruthy();
+
+    // Close it: the contact form is exactly as it was, with no company attached.
+    await user.click(within(companyDialog()).getByRole('button', { name: /Close.*verify in RealNex/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add Company' })).toBeNull());
+    expect((screen.getAllByRole('textbox')[0] as HTMLInputElement).value).toBe('Jane');
+    expect(createNew()).toBeTruthy(); // picker still showing ⇒ no company got attached
+    expect(posts).toHaveLength(1); // only the failed company attempt
   });
 });

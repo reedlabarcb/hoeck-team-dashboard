@@ -65,10 +65,23 @@ export function AddCompany() {
   );
 }
 
-function AddCompanyDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (o: { name: string; warnings: string[] }) => void }) {
+/**
+ * The company create dialog. EXPORTED so the Add Contact form can stack it as a nested dialog for
+ * W1→W2 chaining (P3.9) — one company-create flow, one confirm gate, no fork. `initialOrganization`
+ * prefills the name with whatever the user typed into the contact form's company typeahead.
+ */
+export function AddCompanyDialog({
+  onClose,
+  onCreated,
+  initialOrganization,
+}: {
+  onClose: () => void;
+  onCreated: (o: { key: string; name: string; warnings: string[] }) => void;
+  initialOrganization?: string;
+}) {
   const [step, setStep] = useState<'fill' | 'confirm'>('fill');
   const [showOptional, setShowOptional] = useState(false);
-  const [f, setF] = useState<CreateCompanyInput>({ organization: '', tenant: true }); // Tenant default-checked
+  const [f, setF] = useState<CreateCompanyInput>({ organization: initialOrganization ?? '', tenant: true }); // Tenant default-checked
   const mutation = useCreateRecord('company');
   const outcome = mutation.data;
 
@@ -82,7 +95,7 @@ function AddCompanyDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     if (mutation.isPending) return; // guard rapid double-clicks
     mutation.mutate(f as unknown as Record<string, unknown>, {
       onSuccess: (o) => {
-        if (o.kind === 'success') onCreated({ name: org, warnings: o.warnings });
+        if (o.kind === 'success') onCreated({ key: o.key, name: org, warnings: o.warnings });
         else if (o.kind === 'validation') setStep('fill');
       },
     });

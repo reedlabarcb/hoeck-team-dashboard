@@ -119,6 +119,27 @@ describe('createContact', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('COMPOSES fullName from firstName + lastName so RealNex FullName is not left null', async () => {
+    await createContact({ firstName: 'Britni', lastName: 'Stone' });
+    const b = calls[0].body;
+    expect(b.fullName).toBe('Britni Stone');
+    expect(b.firstName).toBe('Britni'); // first/last are still sent
+    expect(b.lastName).toBe('Stone');
+  });
+
+  it('composes from whichever name part is present', async () => {
+    await createContact({ firstName: 'Rory' });
+    expect(calls[0].body.fullName).toBe('Rory');
+    calls = [];
+    await createContact({ lastName: 'Revier' });
+    expect(calls[0].body.fullName).toBe('Revier');
+  });
+
+  it('an explicit fullName is preserved verbatim (never overwritten by the composition)', async () => {
+    await createContact({ fullName: 'Dr. Britni Stone', firstName: 'Britni', lastName: 'Stone' });
+    expect(calls[0].body.fullName).toBe('Dr. Britni Stone');
+  });
+
   it('useCompanyAddress=true OMITS the inline address entirely (single POST, no attach call)', async () => {
     await createContact({ fullName: 'A B', companyKey: 'CO1', useCompanyAddress: true, address: { address1: '1 Main', city: 'SD' } });
     const b = calls[0].body;

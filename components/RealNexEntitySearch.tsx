@@ -38,6 +38,16 @@ export interface RealNexEntitySearchProps {
   onQueryChange?: (q: string) => void;
   /** Optional — fired when the input is cleared, for resetting an exact-key filter. */
   onClear?: () => void;
+  /**
+   * Optional — renders a "+ Create new {createNewLabel}" action at the BOTTOM of the dropdown,
+   * INCLUDING when there are zero matches (the dead-end this exists to fix: P3.9 W1→W2 chaining,
+   * where the company you need isn't in RealNex yet). Receives the text the user typed so the caller
+   * can prefill its create form. Omit the prop and nothing extra renders — every other call site is
+   * unaffected.
+   */
+  onCreateNew?: (typedQuery: string) => void;
+  /** Noun for the create action, e.g. "company" → "+ Create new company". Default "record". */
+  createNewLabel?: string;
   autoFocus?: boolean;
   className?: string;
 }
@@ -62,6 +72,8 @@ export function RealNexEntitySearch({
   onSelect,
   onQueryChange,
   onClear,
+  onCreateNew,
+  createNewLabel = 'record',
   autoFocus,
   className,
 }: RealNexEntitySearchProps) {
@@ -264,6 +276,23 @@ export function RealNexEntitySearch({
                 </span>
               </li>
             ))
+          )}
+          {onCreateNew && !searching && (
+            <li className={results.length === 0 ? '' : 'mt-1 border-t border-gray-100 pt-1'}>
+              <button
+                type="button"
+                // Select before the input blurs (same trick the result rows use).
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  setOpen(false);
+                  onCreateNew(text.trim());
+                }}
+                className="w-full px-3 py-2 text-left text-sm font-medium text-blue-700 hover:bg-blue-50"
+              >
+                + Create new {createNewLabel}
+                {text.trim() && <span className="font-normal text-gray-600">: {text.trim()}</span>}
+              </button>
+            </li>
           )}
         </ul>
       )}

@@ -136,6 +136,45 @@ describe('RealNexEntitySearch — type filter passes through to the resolver', (
   });
 });
 
+describe('RealNexEntitySearch — "+ Create new" affordance (P3.9 W1→W2 chaining)', () => {
+  it('shows on ZERO matches — the dead-end case — and hands back the typed text', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ results: [] }) })));
+    const onCreateNew = vi.fn();
+    const user = userEvent.setup();
+    renderEl(
+      <RealNexEntitySearch type="company" onSelect={vi.fn()} onCreateNew={onCreateNew} createNewLabel="company" debounceMs={200} />,
+    );
+
+    await user.type(screen.getByRole('combobox'), 'Brand New Co');
+    const create = await screen.findByRole('button', { name: /create new company/i }, { timeout: 2000 });
+    expect(screen.getByText('No matches')).toBeTruthy(); // the dead end...
+    await user.click(create); // ...now has an exit
+    expect(onCreateNew).toHaveBeenCalledWith('Brand New Co'); // typed text → prefill
+  });
+
+  it('also shows BELOW existing results, without disturbing them', async () => {
+    const onCreateNew = vi.fn();
+    const user = userEvent.setup();
+    renderEl(
+      <RealNexEntitySearch type="both" onSelect={vi.fn()} onCreateNew={onCreateNew} createNewLabel="company" debounceMs={200} />,
+    );
+
+    await user.type(screen.getByRole('combobox'), 'acme');
+    await screen.findAllByRole('option', {}, { timeout: 2000 });
+    expect(screen.getAllByRole('option')).toHaveLength(2); // results intact
+    expect(screen.getByRole('button', { name: /create new company/i })).toBeTruthy();
+  });
+
+  it('renders NOTHING extra when onCreateNew is omitted (the other call sites are unaffected)', async () => {
+    const user = userEvent.setup();
+    renderEl(<RealNexEntitySearch type="both" onSelect={vi.fn()} debounceMs={200} />);
+
+    await user.type(screen.getByRole('combobox'), 'acme');
+    await screen.findAllByRole('option', {}, { timeout: 2000 });
+    expect(screen.queryByRole('button', { name: /create new/i })).toBeNull();
+  });
+});
+
 describe('RealNexEntitySearch — clear', () => {
   it('the clear button empties the input and fires onClear (resets an exact-key filter)', async () => {
     const onClear = vi.fn();
