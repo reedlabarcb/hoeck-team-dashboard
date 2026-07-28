@@ -28,6 +28,14 @@ import type {
   MasterExcelLookupResult,
   MasterExcelRow,
 } from '@/lib/external/master-excel/types';
+import {
+  DAYS_BUCKETS,
+  daysToAct,
+  daysUrgency,
+  formatDaysToAct,
+  matchesDaysBucket,
+  type DaysBucket,
+} from '@/lib/master-excel/days-to-act';
 
 interface CrossCheckMatch {
   match: true;
@@ -112,6 +120,42 @@ function DateCell({ label, value }: { label: string; value: string | null }) {
   );
 }
 
+/**
+ * "Days to Act" — days until the renewal window CLOSES (renewalWindowEnd). Replaces the old "Renewal
+ * Deadline" cell, which showed the very same value (the parser aliases renewal_deadline →
+ * renewal_window_end because the production sheet has no discrete deadline column).
+ *
+ * Computed at RENDER (not parse) so "today" is always current — the xlsx parse is etag/TTL-cached.
+ * A closed window stays visible and reads loudest; a missing date reads "—", never blank.
+ */
+function DaysToActCell({ value }: { value: string | null }) {
+  const days = daysToAct(value);
+  const urgency = daysUrgency(days);
+  const tone =
+    urgency === 'closed'
+      ? 'text-red-700 font-semibold'
+      : urgency === 'urgent'
+        ? 'text-amber-800 font-semibold'
+        : urgency === 'none'
+          ? 'text-gray-400'
+          : 'text-gray-900 font-medium';
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-gray-500">Days to Act</div>
+      <div
+        className={`mt-0.5 text-sm ${tone}`}
+        title={value ? `Renewal window closes ${formatDate(value)}` : 'No renewal window date on file'}
+      >
+        {formatDaysToAct(days)}
+      </div>
+      {urgency === 'closed' && (
+        <div className="text-xs font-semibold uppercase tracking-wide text-red-700">Past due</div>
+      )}
+      {urgency === 'urgent' && <div className="text-xs text-amber-700">act soon</div>}
+    </div>
+  );
+}
+
 function ResultCard({
   row,
   onCrossCheck,
@@ -153,7 +197,7 @@ function ResultCard({
         <DateCell label="Lease Expiration" value={row.leaseExpiration} />
         <DateCell label="Renewal Window Start" value={row.renewalWindowStart} />
         <DateCell label="Renewal Window End" value={row.renewalWindowEnd} />
-        <DateCell label="Renewal Deadline" value={row.renewalDeadline} />
+        <DaysToActCell value={row.renewalWindowEnd} />
         <DateCell label="Termination Deadline" value={row.terminationDeadline} />
       </div>
 
@@ -209,6 +253,7 @@ function CrossCheckBanner({ result }: { result: CrossCheckResponse }) {
 function MasterExcelInner() {
   const [client, setClient] = useState('');
   const [market, setMarket] = useState<string>('');
+  const [daysBucket, setDaysBucket] = useState<DaysBucket>('');
   const [crossCheck, setCrossCheck] = useState<CrossCheckResponse | null>(null);
   const [crossCheckErr, setCrossCheckErr] = useState<string | null>(null);
 
@@ -251,6 +296,22 @@ function MasterExcelInner() {
       </div>
     );
   }
+
+  // ---- which leases are on screen ----
+  // Search active (2+ chars) → the server-side client lookup, as before. No search but a days bucket
+  // picked → every loaded row (allQuery, already fetched for the market dropdown), so "show me
+  // everything past due" works across clients without typing a name. The days filter is always applied
+  // CLIENT-side, so it composes with the text search and the market select — all three at once.
+  const searchActive = debouncedClient.length >= 2;
+  const allRows = allQuery.data && !('boxNotConnected' in allQuery.data) ? allQuery.data.rows : [];
+  const sourceRows: MasterExcelRow[] = searchActive
+    ? lookupQuery.data?.rows ?? []
+    : daysBucket
+      ? allRows.filter((r) => !market || r.market === market) // market isn't server-filtered on this path
+      : [];
+  const visibleRows = sourceRows.filter((r) => matchesDaysBucket(daysToAct(r.renewalWindowEnd), daysBucket));
+  const daysFilteredOut = sourceRows.length - visibleRows.length;
+  const bucketLabel = DAYS_BUCKETS.find((b) => b.value === daysBucket)?.label ?? 'Any days to act';
 
   async function runCrossCheck(row: MasterExcelRow) {
     setCrossCheck(null);
@@ -308,6 +369,18 @@ function MasterExcelInner() {
             </option>
           ))}
         </select>
+        <select
+          value={daysBucket}
+          onChange={(e) => setDaysBucket(e.target.value as DaysBucket)}
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-900"
+          aria-label="Filter by days to act"
+        >
+          {DAYS_BUCKETS.map((b) => (
+            <option key={b.value} value={b.value}>
+              {b.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* Cross-check status banner */}
@@ -319,12 +392,15 @@ function MasterExcelInner() {
       {crossCheck && <div className="mb-3">{<CrossCheckBanner result={crossCheck} />}</div>}
 
       {/* Empty + loading + error states */}
-      {debouncedClient.length < 2 && (
+      {!searchActive && !daysBucket && (
         <div className="rounded border border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm text-gray-600">
           Type a client name (2+ characters) to look up critical dates.
+          <div className="mt-1 text-xs text-gray-500">
+            Or pick a days-to-act filter to see every lease with a closing renewal window.
+          </div>
         </div>
       )}
-      {debouncedClient.length >= 2 && lookupQuery.isLoading && (
+      {searchActive && lookupQuery.isLoading && (
         <div className="rounded border border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-500">
           Looking up <span className="font-mono">{debouncedClient}</span>…
         </div>
@@ -335,9 +411,47 @@ function MasterExcelInner() {
         </div>
       )}
 
-      {lookupQuery.data && lookupQuery.data.matchCount === 0 && (
+      {/* Nothing to show: either the client search matched nothing, or the days filter excluded it all */}
+      {searchActive && lookupQuery.data && visibleRows.length === 0 && (
         <div className="rounded border border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm text-gray-600">
-          No matches for <span className="font-mono">{debouncedClient}</span>
+          {sourceRows.length === 0 ? (
+            <>
+              No matches for <span className="font-mono">{debouncedClient}</span>
+              {market && (
+                <>
+                  {' '}
+                  in market <span className="font-mono">{market}</span>
+                </>
+              )}
+              .
+              <div className="mt-1 text-xs text-gray-500">
+                Try a shorter prefix, or check the All markets dropdown.
+              </div>
+            </>
+          ) : (
+            <>
+              {sourceRows.length} lease{sourceRows.length === 1 ? '' : 's'} for{' '}
+              <span className="font-mono">{debouncedClient}</span>, but none match{' '}
+              <span className="font-medium">{bucketLabel}</span>.
+              <div className="mt-1 text-xs text-gray-500">
+                Set the days-to-act filter back to Any to see them all.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Cross-client urgency view: a days filter with no client typed */}
+      {!searchActive && daysBucket && (
+        <div
+          className={`mb-3 rounded border px-3 py-2 text-xs ${
+            visibleRows.length > 0
+              ? 'border-blue-200 bg-blue-50 text-blue-900'
+              : 'border-gray-200 bg-gray-50 text-gray-600'
+          }`}
+        >
+          {visibleRows.length} lease{visibleRows.length === 1 ? '' : 's'} across all clients match{' '}
+          <span className="font-medium">{bucketLabel}</span>
           {market && (
             <>
               {' '}
@@ -345,24 +459,24 @@ function MasterExcelInner() {
             </>
           )}
           .
-          <div className="mt-1 text-xs text-gray-500">
-            Try a shorter prefix, or check the All markets dropdown.
-          </div>
         </div>
       )}
 
-      {/* Disambiguation list */}
-      {lookupQuery.data && lookupQuery.data.multipleMatches && (
+      {/* Disambiguation banner (client search with more than one lease) */}
+      {searchActive && visibleRows.length > 1 && (
         <div className="mb-3 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
-          {lookupQuery.data.matchCount} matches — pick one to view dates (or narrow with the
+          {visibleRows.length} matches — pick one to view dates (or narrow with the
           market filter above).
+          {daysBucket && daysFilteredOut > 0 && (
+            <> {daysFilteredOut} hidden by the days-to-act filter.</>
+          )}
         </div>
       )}
 
       {/* Results */}
-      {lookupQuery.data && lookupQuery.data.matchCount > 0 && (
+      {visibleRows.length > 0 && (
         <div className="space-y-3">
-          {lookupQuery.data.rows.map((row, i) => (
+          {visibleRows.map((row, i) => (
             <ResultCard key={`${row.client}-${row.market}-${row.sourceRow}-${i}`} row={row} onCrossCheck={() => runCrossCheck(row)} />
           ))}
         </div>
