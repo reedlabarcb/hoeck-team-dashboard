@@ -21,7 +21,8 @@ export function ConnectBoxBanner({ redirectAfter = '/files' }: Props) {
           <h2 className="text-base font-semibold text-blue-900">Connect Box to browse files</h2>
           <p className="mt-1 text-sm text-blue-800">
             The dashboard reads <code className="rounded bg-blue-100 px-1 text-xs">Tenants – ChapmanHoeck</code>{' '}
-            directly from Box. You&apos;ll be redirected to Box to grant read + write access. This only
+            directly from Box. It only ever reads — it never adds, changes, or deletes anything in Box.
+            Box&apos;s own approval screen may still ask you to allow broader access. This only
             happens once — tokens auto-refresh after that.
           </p>
           <a
