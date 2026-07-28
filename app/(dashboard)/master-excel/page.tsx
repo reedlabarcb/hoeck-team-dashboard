@@ -132,9 +132,12 @@ function ResultCard({
             )}
           </h2>
           <p className="mt-1 text-sm text-gray-600">{row.address ?? <span className="italic text-gray-400">No address on file</span>}</p>
-          {row.spaceSf && (
-            <p className="mt-0.5 text-xs text-gray-500">{row.spaceSf.toLocaleString()} SF</p>
-          )}
+          <div className="mt-2">
+            <div className="text-xs uppercase tracking-wide text-gray-500">Square Footage</div>
+            <div className="text-sm font-semibold text-gray-900">
+              {row.spaceSf != null ? `${row.spaceSf.toLocaleString()} SF` : '—'}
+            </div>
+          </div>
         </div>
         <button
           type="button"

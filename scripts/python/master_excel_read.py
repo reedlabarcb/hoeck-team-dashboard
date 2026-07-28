@@ -185,12 +185,30 @@ def _cell_to_date_str(v: Any) -> str | None:
 
 
 def _cell_to_float(v: Any) -> float | None:
-    if v is None or v == "":
+    """Parse a SQUARE FOOTAGE cell to a positive number, or None.
+
+    The production 'SQUARE FOOTAGE' column stores TEXT with thousands-commas and a
+    unit suffix ("949 SF", "3,307 SF", "134,000 SF"), so a bare float() raised
+    ValueError on every row and SF silently read as null. Mirror the RealNex-side
+    parseSqFt (lib/external/realnex/details.ts): strip commas/spaces, take the
+    leading integer (any trailing unit like "SF" is dropped), and reject
+    blank/non-numeric/<=0 -> None. Native numeric cells still pass through.
+    (Only used for space_sf.)
+    """
+    if v is None:
         return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
+    if isinstance(v, bool):  # bool is an int subclass — never a valid SF value
         return None
+    if isinstance(v, (int, float)):
+        n = float(v)
+    else:
+        # Mirror parseSqFt: remove commas + spaces, then take the leading integer.
+        cleaned = str(v).replace(",", "").replace(" ", "")
+        m = re.match(r"-?\d+", cleaned)
+        if m is None:
+            return None
+        n = float(m.group(0))
+    return round(n) if n > 0 else None
 
 
 def _detect_headers(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:

@@ -233,6 +233,30 @@ def test_matches_case_insensitive_contains():
     assert not mxr._matches("anything", "")
 
 
+def test_cell_to_float_parses_comma_and_unit_sf():
+    """Production 'SQUARE FOOTAGE' cells are TEXT with thousands-commas + a unit
+    ("949 SF", "3,307 SF", "134,000 SF"). A bare float() failed on all of them; the
+    parser must strip commas/units (mirrors lib/external/realnex/details.ts parseSqFt)."""
+    # Text with a unit suffix (+ thousands-commas) — the real-file shape.
+    assert mxr._cell_to_float("949 SF") == 949
+    assert mxr._cell_to_float("3,307 SF") == 3307
+    assert mxr._cell_to_float("134,000 SF") == 134000
+    assert mxr._cell_to_float("2,750 SF") == 2750
+    # Comma, no unit.
+    assert mxr._cell_to_float("6,500") == 6500
+    # Plain numeric string + native numeric cells still parse.
+    assert mxr._cell_to_float("8000") == 8000
+    assert mxr._cell_to_float(8000) == 8000
+    assert mxr._cell_to_float(3307.0) == 3307
+    # Blank / non-numeric / non-positive -> None.
+    assert mxr._cell_to_float("") is None
+    assert mxr._cell_to_float("   ") is None
+    assert mxr._cell_to_float(None) is None
+    assert mxr._cell_to_float("N/A") is None
+    assert mxr._cell_to_float(0) is None
+    assert mxr._cell_to_float(-5) is None
+
+
 def test_cli_with_no_args_returns_argparse_error():
     code, data = run_cli()
     assert code == 2  # argparse error
