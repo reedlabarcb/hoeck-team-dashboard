@@ -292,6 +292,76 @@ def fixture_yn_only_termination(tmp_path: Path) -> Path:
 
 
 # ============================================================================
+# Office fixtures for office_extract_text tests (.docx / .xlsx)
+# ============================================================================
+
+
+@pytest.fixture
+def fixture_docx(tmp_path: Path) -> Path:
+    """A .docx with BOTH paragraph text and a table. The table matters: CRE documents
+    carry real content in tables (rent schedules, option dates), and python-docx does
+    NOT include table text in document.paragraphs — so an extractor that only walks
+    paragraphs silently drops it. This fixture fails such an extractor."""
+    docx = pytest.importorskip("docx", reason="python-docx not installed; pip install python-docx")
+    document = docx.Document()
+    document.add_paragraph("LEASE AGREEMENT — 525 B Street, San Diego")
+    document.add_paragraph("Tenant shall pay base rent monthly in advance.")
+    document.add_paragraph("")  # blank paragraph — must be skipped, not crash
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Option Dates Open"
+    table.cell(0, 1).text = "2027-01-01"
+    table.cell(1, 0).text = "Rentable SF"
+    table.cell(1, 1).text = "21347"
+    out = tmp_path / "lease.docx"
+    document.save(str(out))
+    return out
+
+
+@pytest.fixture
+def fixture_docx_empty(tmp_path: Path) -> Path:
+    """A structurally valid but text-free .docx → expect status='scanned'."""
+    docx = pytest.importorskip("docx", reason="python-docx not installed; pip install python-docx")
+    document = docx.Document()
+    out = tmp_path / "empty.docx"
+    document.save(str(out))
+    return out
+
+
+@pytest.fixture
+def fixture_xlsx_multisheet(tmp_path: Path) -> Path:
+    """Multi-sheet .xlsx. Sheet 2 holds a FORMULA written via openpyxl.
+
+    NOTE on cached values: openpyxl writes no cached result for a formula (only Excel
+    does), so under data_only=True that cell reads as None. That's exactly the property
+    we want to assert — the extractor must NOT emit the formula STRING ("=SUM(...)").
+    """
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "Renewals 2027"
+    _add_row(ws1, ["Client", "Suite", "SF"], 1)
+    _add_row(ws1, ["Procopio", "Suite 400", 8000], 2)
+
+    ws2 = wb.create_sheet("Totals")
+    _add_row(ws2, ["Total SF"], 1)
+    ws2.cell(row=2, column=1, value="=SUM('Renewals 2027'!C2:C9)")  # formula, no cached value
+
+    out = tmp_path / "portfolio.xlsx"
+    wb.save(out)
+    return out
+
+
+@pytest.fixture
+def fixture_xlsx_empty(tmp_path: Path) -> Path:
+    """A workbook whose only sheet has no cells. The SHEET NAME is still content, so
+    this must NOT be classified empty — it proves sheet names get indexed."""
+    wb = Workbook()
+    wb.active.title = "Blank Tab"
+    out = tmp_path / "blank.xlsx"
+    wb.save(out)
+    return out
+
+
+# ============================================================================
 # Phase 2.5a — PDF fixtures for pdf_extract_text tests
 # ============================================================================
 # fpdf2 is a small pure-Python PDF writer used here at test time only.

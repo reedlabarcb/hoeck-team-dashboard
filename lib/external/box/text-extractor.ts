@@ -1,19 +1,23 @@
 /**
- * PDF text-extraction worker (Phase 2.5a).
+ * Text-extraction worker — PDF (Phase 2.5a) + Word/Excel.
  *
  * Mirrors the walker.ts/job-runner.ts pattern, but instead of crawling the Box tree,
- * iterates over already-indexed PDFs in box_folder_index and pulls text from each.
+ * iterates over already-indexed files in box_folder_index and pulls text from each.
+ * The walker indexes EVERY file type, so .docx/.xlsx rows already exist here; only
+ * extraction was PDF-only, which is why Word/Excel content wasn't searchable.
  *
- * Per-PDF lifecycle:
- *   1. SELECT next batch where box_type='file' AND name ILIKE '%.pdf'
- *        AND extraction_status='pending' AND deleted_at IS NULL
+ * Per-file lifecycle:
+ *   1. SELECT next batch where box_type='file' AND name ILIKE '%.pdf'/'%.docx'/'%.xlsx'
+ *        AND (extraction_status='pending' OR extraction_status IS NULL)
+ *        AND deleted_at IS NULL
  *        ORDER BY box_modified_at DESC NULLS LAST
- *        LIMIT MAX_PDFS_PER_RUN
+ *        LIMIT MAX_FILES_PER_RUN            (see pendingFilesQuery for why NULL counts)
  *   2. For each row:
- *      a. downloadFile() from Box â†’ stream to /tmp/{box_id}.pdf
- *      b. spawn scripts/python/pdf_extract_text.py --file-path /tmp/{box_id}.pdf
+ *      a. downloadFile() from Box â†’ stream to /tmp/box-extract-{box_id}.{ext}
+ *      b. spawn the extractor for that extension (pdf â†’ pdf_extract_text.py,
+ *         docx/xlsx â†’ office_extract_text.py) â€” both share one JSON contract
  *      c. parse JSON; map status â†’ extraction_status; persist via UPDATE
- *      d. delete /tmp/{box_id}.pdf (best-effort)
+ *      d. delete the temp file (best-effort)
  *      e. bump in-memory counters, call ctx.reportProgress() (throttled to 5s)
  *
  * Status mapping (Python â†’ DB):
@@ -42,18 +46,54 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { and, desc, eq, ilike, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { boxFolderIndex } from '@/lib/db/schema';
 import { downloadFile } from './safe';
 import type { JobContext } from './job-runner';
 
-const PYTHON_SCRIPT = resolve(process.cwd(), 'scripts/python/pdf_extract_text.py');
 const PYTHON_BIN = process.env.PYTHON_BIN || 'python';
 
 // Cap per run so a single trigger doesn't try to chew through everything at once
-// on a fresh deploy. Subsequent runs (cron in Phase 2.5a.7b) pick up the next batch.
-const MAX_PDFS_PER_RUN = 10_000;
+// on a fresh deploy. Subsequent runs pick up the next batch (see runTextExtraction).
+const MAX_FILES_PER_RUN = 10_000;
+
+/** File types we can extract text from. Extension drives which Python script runs. */
+export type ExtractableExtension = 'pdf' | 'docx' | 'xlsx';
+
+/**
+ * Extension -> extractor script. PDFs keep pdfplumber; Word/Excel share the office
+ * extractor (python-docx / openpyxl). Both scripts implement the SAME JSON stdout
+ * contract, so everything downstream — status mapping, persistResult — is common.
+ */
+const EXTRACTOR_SCRIPT: Record<ExtractableExtension, string> = {
+  pdf: 'pdf_extract_text.py',
+  docx: 'office_extract_text.py',
+  xlsx: 'office_extract_text.py',
+};
+
+/** Which extractable type is this filename, if any? Case-insensitive. */
+export function extensionOf(name: string): ExtractableExtension | null {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'pdf';
+  if (lower.endsWith('.docx')) return 'docx';
+  if (lower.endsWith('.xlsx')) return 'xlsx';
+  return null;
+}
+
+/** Absolute path of the extractor script for an extension. */
+export function scriptPathFor(ext: ExtractableExtension): string {
+  return resolve(process.cwd(), 'scripts/python', EXTRACTOR_SCRIPT[ext]);
+}
+
+/**
+ * Temp filename for a download. The REAL extension is preserved: python-docx and
+ * openpyxl sniff/expect the container format and reject a .docx renamed to .pdf,
+ * so the old hardcoded `pdf-extract-{id}.pdf` would fail every office file.
+ */
+export function tmpNameFor(boxId: string, ext: ExtractableExtension): string {
+  return `box-extract-${boxId}.${ext}`;
+}
 
 export interface TextExtractionResult {
   jobId: string;
@@ -77,10 +117,24 @@ interface PythonResponse {
 }
 
 /**
- * Pull the next batch of PDF rows that need extraction. Ordered by modified_at desc
- * (newest first) so demo / Mike-driven testing sees recent leases populated first.
+ * The next batch of rows needing extraction — PDF, Word, or Excel. Exported so the
+ * predicate can be asserted via toSQL() without a DB (see text-extractor.test.ts).
+ *
+ * TWO status values qualify, and the NULL half is load-bearing:
+ *   - 'pending'  — PDFs, set by the one-time migration 0006 backfill.
+ *   - NULL       — everything the migration didn't touch, i.e. EVERY .docx/.xlsx row
+ *                  (extraction_status has no DB default; the walker never sets it).
+ *                  Widening the filename filter alone would still have matched zero
+ *                  office rows, so this is what actually makes them reachable —
+ *                  and it needs no migration and no schema change.
+ *
+ * Terminal statuses ('extracted' / 'failed' / 'skipped_*') are excluded, which is what
+ * makes a re-run IDEMPOTENT and a interrupted run RESUMABLE: finished rows are never
+ * re-picked, and anything not yet reached is still pending/NULL for the next batch.
+ *
+ * Ordered newest-modified first so recent leases populate first.
  */
-async function fetchPendingPdfs(limit: number) {
+export function pendingFilesQuery(limit: number) {
   return db
     .select({
       boxId: boxFolderIndex.boxId,
@@ -91,8 +145,15 @@ async function fetchPendingPdfs(limit: number) {
     .where(
       and(
         eq(boxFolderIndex.boxType, 'file'),
-        ilike(boxFolderIndex.name, '%.pdf'),
-        eq(boxFolderIndex.extractionStatus, 'pending'),
+        or(
+          ilike(boxFolderIndex.name, '%.pdf'),
+          ilike(boxFolderIndex.name, '%.docx'),
+          ilike(boxFolderIndex.name, '%.xlsx'),
+        ),
+        or(
+          eq(boxFolderIndex.extractionStatus, 'pending'),
+          isNull(boxFolderIndex.extractionStatus),
+        ),
         isNull(boxFolderIndex.deletedAt),
       ),
     )
@@ -101,10 +162,10 @@ async function fetchPendingPdfs(limit: number) {
 }
 
 /**
- * Download a Box file to a local /tmp path. Returns the local path.
+ * Download a Box file to a local /tmp path, KEEPING its real extension. Returns the path.
  */
-async function downloadToTmp(userId: string, boxId: string): Promise<string> {
-  const localPath = join(tmpdir(), `pdf-extract-${boxId}.pdf`);
+async function downloadToTmp(userId: string, boxId: string, ext: ExtractableExtension): Promise<string> {
+  const localPath = join(tmpdir(), tmpNameFor(boxId, ext));
   const body = await downloadFile(userId, boxId);
   await pipeline(
     Readable.fromWeb(body as unknown as import('node:stream/web').ReadableStream),
@@ -114,13 +175,14 @@ async function downloadToTmp(userId: string, boxId: string): Promise<string> {
 }
 
 /**
- * Spawn pdf_extract_text.py and parse its JSON stdout. Rejects only on argparse
- * / IO failures (exit code >1) â€” exit 1 with status='error' is returned as data
- * so the caller can persist it as extraction_status='failed' with the message.
+ * Spawn the extractor for this file type and parse its JSON stdout. Rejects only on
+ * argparse / IO failures (exit code >1) â€” exit 1 with status='error' is returned as
+ * data so the caller can persist it as extraction_status='failed' with the message.
+ * Both extractors share one contract, so this is type-agnostic.
  */
-function runPython(filePath: string): Promise<PythonResponse> {
+function runPython(scriptPath: string, filePath: string): Promise<PythonResponse> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(PYTHON_BIN, [PYTHON_SCRIPT, '--file-path', filePath], {
+    const child = spawn(PYTHON_BIN, [scriptPath, '--file-path', filePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -133,7 +195,7 @@ function runPython(filePath: string): Promise<PythonResponse> {
       // 0 = success/skip, 1 = extraction error (still emits JSON), 2 = argparse error
       if (code !== 0 && code !== 1) {
         return rejectPromise(
-          new Error(`pdf_extract_text exited ${code}. stderr: ${stderr.slice(0, 500)}`),
+          new Error(`${scriptPath} exited ${code}. stderr: ${stderr.slice(0, 500)}`),
         );
       }
       try {
@@ -142,7 +204,7 @@ function runPython(filePath: string): Promise<PythonResponse> {
       } catch (err) {
         rejectPromise(
           new Error(
-            `Failed to parse pdf_extract_text output: ${
+            `Failed to parse ${scriptPath} output: ${
               err instanceof Error ? err.message : 'unknown'
             }. stdout head: ${stdout.slice(0, 300)}`,
           ),
@@ -256,11 +318,11 @@ export async function runTextExtraction(opts: {
   maxItems?: number;
 }): Promise<TextExtractionResult> {
   const startedAt = Date.now();
-  const limit = opts.maxItems ?? MAX_PDFS_PER_RUN;
+  const limit = opts.maxItems ?? MAX_FILES_PER_RUN;
 
-  const pending = await fetchPendingPdfs(limit);
+  const pending = await pendingFilesQuery(limit);
   console.log(
-    `[job:${opts.jobContext.jobId}] text-extractor: ${pending.length} pending PDFs (limit ${limit})`,
+    `[job:${opts.jobContext.jobId}] text-extractor: ${pending.length} pending files (pdf/docx/xlsx, limit ${limit})`,
   );
 
   let processed = 0;
@@ -272,8 +334,12 @@ export async function runTextExtraction(opts: {
     const path = (row.pathSegments ?? []).join('/');
     let localPath: string | undefined;
     try {
-      localPath = await downloadToTmp(opts.userId, row.boxId);
-      const py = await runPython(localPath);
+      // Dispatch by extension. The SELECT only returns the three we handle, so a null
+      // here would mean the filter and this map drifted apart — fail loudly, don't guess.
+      const ext = extensionOf(row.name);
+      if (!ext) throw new Error(`no extractor for "${row.name}" (SELECT/dispatch mismatch)`);
+      localPath = await downloadToTmp(opts.userId, row.boxId, ext);
+      const py = await runPython(scriptPathFor(ext), localPath);
       await persistResult(row.boxId, py);
 
       if (py.status === 'ok') succeeded++;
@@ -283,7 +349,7 @@ export async function runTextExtraction(opts: {
       failed++;
       const msg = err instanceof Error ? err.message : String(err);
       console.error(
-        `[job:${opts.jobContext.jobId}] PDF ${row.boxId} (${row.name}) failed:`,
+        `[job:${opts.jobContext.jobId}] file ${row.boxId} (${row.name}) failed:`,
         msg,
       );
       try {

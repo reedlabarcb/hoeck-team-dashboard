@@ -619,7 +619,19 @@ export async function checkTextExtraction(): Promise<CheckResult> {
         count(*) FILTER (WHERE extraction_status = 'skipped_scanned')::int              AS skipped_scanned,
         count(*) FILTER (WHERE extraction_status = 'skipped_too_large')::int            AS skipped_too_large,
         count(*) FILTER (WHERE extraction_status IS NULL
-                              AND box_type = 'file' AND name ILIKE '%.pdf')::int        AS null_status
+                              AND box_type = 'file' AND name ILIKE '%.pdf')::int        AS null_status,
+        -- Office (Word/Excel) extraction — watch the backfill drain. office_pending
+        -- counts BOTH 'pending' and NULL because migration 0006 only set 'pending' on
+        -- PDFs, so every un-extracted office row is still NULL.
+        count(*) FILTER (WHERE box_type = 'file'
+                              AND (name ILIKE '%.docx' OR name ILIKE '%.xlsx'))::int    AS total_office,
+        count(*) FILTER (WHERE box_type = 'file'
+                              AND (name ILIKE '%.docx' OR name ILIKE '%.xlsx')
+                              AND extraction_status = 'extracted')::int                 AS office_extracted,
+        count(*) FILTER (WHERE box_type = 'file'
+                              AND (name ILIKE '%.docx' OR name ILIKE '%.xlsx')
+                              AND (extraction_status IS NULL
+                                   OR extraction_status = 'pending'))::int              AS office_pending
       FROM box_folder_index
       WHERE deleted_at IS NULL
     `);
@@ -631,6 +643,9 @@ export async function checkTextExtraction(): Promise<CheckResult> {
       skipped_scanned: number;
       skipped_too_large: number;
       null_status: number;
+      total_office: number;
+      office_extracted: number;
+      office_pending: number;
     };
     const status: CheckStatus = r.failed > 0 ? 'warn' : 'ok';
     return {
@@ -639,7 +654,8 @@ export async function checkTextExtraction(): Promise<CheckResult> {
       detail:
         `total_pdfs=${r.total_pdfs} extracted=${r.extracted} pending=${r.pending} ` +
         `scanned=${r.skipped_scanned} too_large=${r.skipped_too_large} failed=${r.failed} ` +
-        `null_status=${r.null_status}`,
+        `null_status=${r.null_status} | office(docx+xlsx): total=${r.total_office} ` +
+        `extracted=${r.office_extracted} pending=${r.office_pending}`,
       metadata: {
         totalPdfs: r.total_pdfs,
         extracted: r.extracted,
@@ -648,6 +664,9 @@ export async function checkTextExtraction(): Promise<CheckResult> {
         skippedScanned: r.skipped_scanned,
         skippedTooLarge: r.skipped_too_large,
         nullStatus: r.null_status,
+        totalOffice: r.total_office,
+        officeExtracted: r.office_extracted,
+        officePending: r.office_pending,
       },
     };
   } catch (e) {

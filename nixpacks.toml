@@ -78,6 +78,6 @@ cmds = [
   'python3.11 -m venv /opt/venv',
   '/opt/venv/bin/python -m ensurepip --upgrade || true',
   '/opt/venv/bin/python -m pip install --upgrade pip',
-  '/opt/venv/bin/python -m pip install --no-cache-dir --only-binary=:all: openpyxl==3.1.2 pdfplumber==0.11.10',
-  "/opt/venv/bin/python -c \"import openpyxl, pdfplumber; print('venv OK')\"",
+  '/opt/venv/bin/python -m pip install --no-cache-dir --only-binary=:all: openpyxl==3.1.2 pdfplumber==0.11.10 python-docx==1.1.2',
+  "/opt/venv/bin/python -c \"import openpyxl, pdfplumber, docx; print('venv OK')\"",
 ]
