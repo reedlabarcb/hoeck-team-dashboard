@@ -27,6 +27,17 @@
  *   "error"     â†’ extraction_status='failed', extraction_error=<msg>
  *   <crash>     â†’ extraction_status='failed', extraction_error="subprocess crashed: <msg>"
  *
+ * ACCESS FAILURES ARE NOT TERMINAL:
+ *   A 403/404 from Box means "this TOKEN can't see this file", not "this file is
+ *   unextractable". The job runs under a BORROWED user token (the most recently
+ *   refreshed row in user_box_tokens), so a run by someone with narrower Box
+ *   visibility than the index would otherwise stamp 'failed' — which the batch
+ *   predicate excludes — and permanently bury those files. Instead we leave the row
+ *   UNTOUCHED (pending/NULL) so a later run under a broader token picks it up, and
+ *   count it as skippedNoAccess. Trade-off: a file nobody can read is retried on
+ *   every run. That's one cheap failing GET, and runs are manual — far better than
+ *   silent permanent loss, and it needs no new enum value or migration.
+ *
  * IMPORTANT â€” generated column:
  *   `extracted_text_tsvector` is a Postgres GENERATED ALWAYS AS STORED column.
  *   This worker writes ONLY `extracted_text`. Postgres recomputes the tsvector
@@ -100,8 +111,28 @@ export interface TextExtractionResult {
   processed: number;
   succeeded: number;
   failed: number;
+  /** scanned + too_large + no-access. Keeps processed = succeeded + failed + skipped. */
   skipped: number;
+  /** Subset of `skipped`: left pending on purpose, for a run under a broader token. */
+  skippedNoAccess: number;
   durationMs: number;
+}
+
+/**
+ * Is this an ACCESS failure (403 forbidden / 404 invisible-or-gone) rather than a real
+ * extraction failure? Access failures are retryable under a different token; everything
+ * else is terminal.
+ *
+ * ⚠️ FRAGILITY: this matches on the message TEXT, because the Box safe wrapper throws a
+ * plain Error — `Box downloadFile ${fileId} failed: HTTP ${res.status} — ${body}` — and
+ * widening that wrapper is out of scope here. If that message format ever changes, this
+ * silently stops matching and permission failures go back to being terminal. The tests in
+ * text-extractor.test.ts pin the exact strings downloadFile produces, so a format change
+ * fails CI instead of quietly burying files.
+ */
+export function isAccessError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\bHTTP (403|404)\b/.test(msg);
 }
 
 type PythonStatus = 'ok' | 'scanned' | 'too_large' | 'error';
@@ -328,7 +359,8 @@ export async function runTextExtraction(opts: {
   let processed = 0;
   let succeeded = 0;
   let failed = 0;
-  let skipped = 0;
+  let skipped = 0; // scanned + too_large + no-access
+  let skippedNoAccess = 0; // subset of `skipped`, deliberately left pending
 
   for (const row of pending) {
     const path = (row.pathSegments ?? []).join('/');
@@ -346,8 +378,23 @@ export async function runTextExtraction(opts: {
       else if (py.status === 'scanned' || py.status === 'too_large') skipped++;
       else if (py.status === 'error') failed++;
     } catch (err) {
-      failed++;
       const msg = err instanceof Error ? err.message : String(err);
+
+      // 403/404 = this token can't see the file. Leave extraction_status UNTOUCHED
+      // (pending/NULL) so a later run under a broader token retries it — writing
+      // 'failed' here would bury it permanently, since 'failed' is excluded from the
+      // batch predicate and nothing retries it.
+      if (isAccessError(err)) {
+        skipped++;
+        skippedNoAccess++;
+        console.warn(
+          `[job:${opts.jobContext.jobId}] file ${row.boxId} (${row.name}) NOT ACCESSIBLE to this token — ` +
+            `left pending for a run under a broader token: ${msg}`,
+        );
+        continue; // no status write at all
+      }
+
+      failed++;
       console.error(
         `[job:${opts.jobContext.jobId}] file ${row.boxId} (${row.name}) failed:`,
         msg,
@@ -384,8 +431,15 @@ export async function runTextExtraction(opts: {
 
   const durationMs = Date.now() - startedAt;
   console.log(
-    `[job:${opts.jobContext.jobId}] text-extractor done: processed=${processed} succeeded=${succeeded} failed=${failed} skipped=${skipped} duration=${durationMs}ms`,
+    `[job:${opts.jobContext.jobId}] text-extractor done: processed=${processed} succeeded=${succeeded} ` +
+      `failed=${failed} skipped=${skipped} (no_access=${skippedNoAccess}, still pending) duration=${durationMs}ms`,
   );
+  if (skippedNoAccess > 0) {
+    console.warn(
+      `[job:${opts.jobContext.jobId}] ${skippedNoAccess} file(s) were not accessible to this token and remain ` +
+        `pending. Re-run under a token with broader Box visibility to pick them up.`,
+    );
+  }
 
   return {
     jobId: opts.jobContext.jobId,
@@ -393,6 +447,7 @@ export async function runTextExtraction(opts: {
     succeeded,
     failed,
     skipped,
+    skippedNoAccess,
     durationMs,
   };
 }

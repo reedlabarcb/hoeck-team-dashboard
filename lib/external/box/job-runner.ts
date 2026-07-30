@@ -463,13 +463,15 @@ export async function kickOffTextExtraction(opts: {
         succeeded: result.succeeded,
         failed: result.failed,
         skipped: result.skipped,
+        // Subset of `skipped` left deliberately pending (Box 403/404 under this token).
+        skippedNoAccess: result.skippedNoAccess,
         durationMs: result.durationMs,
       },
       status: 'ok',
     });
 
     console.log(
-      `[job:${jobId}] done text_extraction walkId=${walkId} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} skipped=${result.skipped} duration=${result.durationMs}ms`,
+      `[job:${jobId}] done text_extraction walkId=${walkId} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} skipped=${result.skipped} no_access=${result.skippedNoAccess} duration=${result.durationMs}ms`,
     );
   } catch (err) {
     console.error(`[job:${jobId}] FAILED text_extraction walkId=${walkId}:`, err);
